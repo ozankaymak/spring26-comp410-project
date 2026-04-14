@@ -34,8 +34,52 @@ Minkowski product:
 <v, v>_M > 0
 ```
 
-Camera movement will be represented with Lorentz isometries. Those transforms
-must preserve the Minkowski product and keep positions on the future sheet.
+Movement is represented with Lorentz isometries. Those transforms preserve the
+Minkowski product and keep positions on the future sheet.
+
+## Motion
+
+A local movement vector `(dx, dy)` is treated as a tangent displacement in the
+current frame. Its hyperbolic length is:
+
+```text
+d = sqrt(dx^2 + dy^2)
+```
+
+For `d > 0`, the unit tangent direction is:
+
+```text
+nx = dx / d
+ny = dy / d
+```
+
+The local Lorentz boost is:
+
+```text
+[ cosh(d)       sinh(d) nx                  sinh(d) ny                ]
+[ sinh(d) nx    1 + (cosh(d)-1) nx^2        (cosh(d)-1) nx ny         ]
+[ sinh(d) ny    (cosh(d)-1) nx ny           1 + (cosh(d)-1) ny^2      ]
+```
+
+The camera frame stores three vectors:
+
+```text
+position, forward, right
+```
+
+They are kept orthonormal under the Minkowski product:
+
+```text
+<position, position>_M = -1
+<forward, forward>_M = 1
+<right, right>_M = 1
+<position, forward>_M = 0
+<position, right>_M = 0
+<forward, right>_M = 0
+```
+
+After each movement update, the frame is orthonormalized again to remove small
+floating-point drift.
 
 ## Regular `{4,6}` Tiling
 
