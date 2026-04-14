@@ -1,39 +1,15 @@
 #include "math/hyperbolic.h"
+#include "test_support.h"
 
 #include <cmath>
-#include <iostream>
 #include <limits>
 #include <stdexcept>
-#include <string>
 
 namespace {
 
-constexpr double kTolerance = 1.0e-9;
-
-void require(bool condition, const std::string& message) {
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
-}
-
-void require_close(double actual, double expected, const std::string& message) {
-    if (std::abs(actual - expected) > kTolerance) {
-        throw std::runtime_error(message + ": expected " + std::to_string(expected) +
-                                 ", got " + std::to_string(actual));
-    }
-}
-
-template <typename Exception, typename Fn>
-void require_throws(Fn&& fn, const std::string& message) {
-    bool threw = false;
-    try {
-        fn();
-    } catch (const Exception&) {
-        threw = true;
-    }
-
-    require(threw, message);
-}
+using hyper::test::require;
+using hyper::test::require_close;
+using hyper::test::require_throws;
 
 double euclidean_norm(const hyper::math::Vec2& v) {
     return std::sqrt(v.x * v.x + v.y * v.y);
@@ -190,17 +166,12 @@ void test_regular_tiling_metrics() {
 } // namespace
 
 int main() {
-    try {
+    return hyper::test::run("math_tests", [] {
         test_hyperboloid_invariants();
         test_distance_formula_between_polar_points();
         test_classification_and_validation();
         test_normalization();
         test_projections();
         test_regular_tiling_metrics();
-    } catch (const std::exception& error) {
-        std::cerr << "math_tests failed: " << error.what() << '\n';
-        return 1;
-    }
-
-    return 0;
+    });
 }

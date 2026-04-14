@@ -1,31 +1,16 @@
 #include "mesh.h"
 #include "shader.h"
+#include "test_support.h"
 
 #include <algorithm>
 #include <filesystem>
-#include <iostream>
 #include <stdexcept>
 #include <string>
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
-}
-
-template <typename Exception, typename Fn>
-void require_throws(Fn&& fn, const std::string& message) {
-    bool threw = false;
-    try {
-        fn();
-    } catch (const Exception&) {
-        threw = true;
-    }
-
-    require(threw, message);
-}
+using hyper::test::require;
+using hyper::test::require_throws;
 
 std::filesystem::path source_path(const std::filesystem::path& relative) {
     return std::filesystem::path{HYPER_SOURCE_DIR} / relative;
@@ -61,14 +46,8 @@ void test_triangle_mesh_data() {
 } // namespace
 
 int main() {
-    try {
+    return hyper::test::run("render_tests", [] {
         test_shader_sources_are_available();
         test_triangle_mesh_data();
-    } catch (const std::exception& error) {
-        std::cerr << "render_tests failed: " << error.what() << '\n';
-        return 1;
-    }
-
-    return 0;
+    });
 }
-
