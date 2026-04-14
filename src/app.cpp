@@ -3,6 +3,7 @@
 #include "math/hyperbolic.h"
 #include "mesh.h"
 #include "shader.h"
+#include "tiling_core.h"
 
 #include <chrono>
 #include <filesystem>
@@ -86,6 +87,37 @@ void process_input(GLFWwindow* window, CameraState& camera, float dt) {
     }
 }
 
+MeshData make_tile_center_mesh(const tiling::TilingPatch& patch) {
+    MeshData mesh;
+    const float marker_radius = 0.012F;
+
+    for (const tiling::Tile& tile : patch.tiles) {
+        const math::Vec2 projected = math::project_to_poincare_disk(tile.center);
+        const glm::vec3 center{static_cast<float>(projected.x), static_cast<float>(projected.y), 0.0F};
+        const float depth_factor = static_cast<float>(tile.depth) / 4.0F;
+        const glm::vec3 color{
+            tile.depth == 0 ? 0.95F : 0.25F + 0.10F * depth_factor,
+            tile.depth == 0 ? 0.90F : 0.75F - 0.08F * depth_factor,
+            tile.depth == 0 ? 0.25F : 0.95F,
+        };
+
+        const unsigned int base = static_cast<unsigned int>(mesh.vertices.size());
+        mesh.vertices.push_back(Vertex{center + glm::vec3{-marker_radius, -marker_radius, 0.0F}, color});
+        mesh.vertices.push_back(Vertex{center + glm::vec3{marker_radius, -marker_radius, 0.0F}, color});
+        mesh.vertices.push_back(Vertex{center + glm::vec3{marker_radius, marker_radius, 0.0F}, color});
+        mesh.vertices.push_back(Vertex{center + glm::vec3{-marker_radius, marker_radius, 0.0F}, color});
+
+        mesh.indices.push_back(base + 0U);
+        mesh.indices.push_back(base + 1U);
+        mesh.indices.push_back(base + 2U);
+        mesh.indices.push_back(base + 0U);
+        mesh.indices.push_back(base + 2U);
+        mesh.indices.push_back(base + 3U);
+    }
+
+    return mesh;
+}
+
 glm::mat4 camera_matrix(const CameraState& camera, int width, int height) {
     const float aspect = height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0F;
     const math::Vec2 projected_position = math::project_to_poincare_disk(camera.frame.position);
@@ -129,8 +161,9 @@ void App::run() {
 
     ShaderProgram shader =
         ShaderProgram::from_files(resolve_shader_path("basic.vert"), resolve_shader_path("basic.frag"));
+    const tiling::TilingPatch patch = tiling::generate_tiling_patch(math::RegularTilingParameters{4, 6}, 3);
     Mesh mesh;
-    mesh.upload(make_test_triangle_mesh());
+    mesh.upload(make_tile_center_mesh(patch));
 
     CameraState camera;
     auto previous_time = std::chrono::steady_clock::now();

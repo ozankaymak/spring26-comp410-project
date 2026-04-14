@@ -40,6 +40,12 @@ add_library(hyperbolica_math
 target_include_directories(hyperbolica_math PUBLIC src)
 target_link_libraries(hyperbolica_math PUBLIC project_warnings)
 
+add_library(hyperbolica_tiling
+    src/tiling_core.cpp
+)
+target_include_directories(hyperbolica_tiling PUBLIC src)
+target_link_libraries(hyperbolica_tiling PUBLIC hyperbolica_math project_warnings)
+
 set(HYPER_HAS_IMGUI 0)
 set(HYPER_IMGUI_TARGET "")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui.cpp")
@@ -87,7 +93,7 @@ add_executable(hyperbolica
 target_include_directories(hyperbolica PRIVATE src)
 target_link_libraries(hyperbolica
     PRIVATE
-        hyperbolica_math
+        hyperbolica_tiling
         hyperbolica_render
         PkgConfig::GLFW3
         project_warnings
@@ -105,6 +111,12 @@ if(BUILD_TESTING)
     )
     target_link_libraries(hyperbolica_math_tests PRIVATE hyperbolica_math project_warnings)
     add_test(NAME hyperbolica_math_tests COMMAND hyperbolica_math_tests)
+
+    add_executable(hyperbolica_tiling_tests
+        tests/tiling_tests.cpp
+    )
+    target_link_libraries(hyperbolica_tiling_tests PRIVATE hyperbolica_tiling project_warnings)
+    add_test(NAME hyperbolica_tiling_tests COMMAND hyperbolica_tiling_tests)
 
     add_executable(hyperbolica_render_tests
         tests/render_tests.cpp

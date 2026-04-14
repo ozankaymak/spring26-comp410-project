@@ -135,6 +135,11 @@ inradius      = 0.6584789484624083
 circumradius  = 1.1462158347805889
 ```
 
+The current topology generator builds a finite patch by reflecting the root
+tile across its sides. Each side reflection is a Lorentz isometry, so generated
+tile centers stay on the hyperboloid. Duplicate centers are merged with a small
+distance tolerance during breadth-first expansion.
+
 ## Projection Helpers
 
 The math layer exposes projection helpers without forcing a renderer choice:
