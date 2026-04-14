@@ -81,6 +81,26 @@ void test_patch_rejects_invalid_inputs() {
         "non-positive duplicate tolerance is rejected");
 }
 
+void test_find_current_tile_and_rebasing() {
+    const hyper::tiling::TilingPatch patch = hyper::tiling::generate_tiling_patch(hyper::math::RegularTilingParameters{4, 6}, 1);
+    const hyper::math::CameraFrame canonical = hyper::math::canonical_frame();
+
+    // Should find root tile for origin
+    const int root_tile = hyper::tiling::find_current_tile(patch, canonical.position);
+    require(root_tile == 0, "origin is in root tile");
+
+    // Move to a neighbor
+    const hyper::math::CameraFrame moved = hyper::math::move_frame(canonical, hyper::math::Vec2{1.0, 0.0});
+    const int neighbor_tile = hyper::tiling::find_current_tile(patch, moved.position);
+    require(neighbor_tile != 0, "moved position is in a different tile");
+
+    // Rebase to the neighbor tile
+    const hyper::tiling::Tile& neighbor = patch.tiles[static_cast<size_t>(neighbor_tile)];
+    const hyper::math::CameraFrame rebased = hyper::tiling::rebase_frame_to_tile(moved, neighbor);
+    const int rebased_tile = hyper::tiling::find_current_tile(patch, rebased.position);
+    require(rebased_tile == neighbor_tile, "rebased frame is in the same tile");
+}
+
 } // namespace
 
 int main() {
@@ -89,6 +109,7 @@ int main() {
         test_patch_depth_and_centers();
         test_neighbor_centers_are_one_tile_step_away();
         test_patch_rejects_invalid_inputs();
+        test_find_current_tile_and_rebasing();
     });
 }
 

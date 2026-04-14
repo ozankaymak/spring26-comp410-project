@@ -164,5 +164,26 @@ bool has_duplicate_centers(const TilingPatch& patch, double tolerance) {
     return false;
 }
 
+int find_current_tile(const TilingPatch& patch, const math::Vec3& position) {
+    int closest_tile = -1;
+    double min_distance = std::numeric_limits<double>::max();
+
+    for (const Tile& tile : patch.tiles) {
+        const double dist = math::intrinsic_distance(tile.center, position);
+        if (dist < min_distance) {
+            min_distance = dist;
+            closest_tile = tile.id;
+        }
+    }
+
+    return closest_tile;
+}
+
+math::CameraFrame rebase_frame_to_tile(const math::CameraFrame& frame, const Tile& tile) {
+    // Apply the inverse of the tile's transform to the frame
+    const math::Mat3 inverse_transform = math::inverse_isometry(tile.transform);
+    return math::apply_isometry(inverse_transform, frame);
+}
+
 } // namespace hyper::tiling
 
