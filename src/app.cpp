@@ -1,7 +1,9 @@
 #include "app.h"
 
+#include "math/hyperbolic.h"
 #include "mesh.h"
 #include "shader.h"
+#include "tiling_core.h"
 
 #include <chrono>
 #include <filesystem>
@@ -30,7 +32,7 @@ struct GlfwContext {
 };
 
 struct CameraState {
-    glm::vec2 center{0.0F, 0.0F};
+    math::CameraFrame frame = math::canonical_frame();
     float zoom = 1.0F;
 };
 
@@ -57,19 +59,26 @@ void process_input(GLFWwindow* window, CameraState& camera, float dt) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
     }
 
-    const float pan_speed = 1.1F * camera.zoom * dt;
+    const double move_speed = 1.1 * static_cast<double>(dt);
+    math::Vec2 local_delta{};
+
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
-        camera.center.x -= pan_speed;
+        local_delta.y -= move_speed;
     }
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-        camera.center.x += pan_speed;
+        local_delta.y += move_speed;
     }
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
-        camera.center.y += pan_speed;
+        local_delta.x += move_speed;
     }
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
-        camera.center.y -= pan_speed;
+        local_delta.x -= move_speed;
     }
+
+    if (local_delta.x != 0.0 || local_delta.y != 0.0) {
+        camera.frame = math::move_frame(camera.frame, local_delta);
+    }
+
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
         camera.zoom = glm::min(camera.zoom + dt, 3.0F);
     }
@@ -78,11 +87,44 @@ void process_input(GLFWwindow* window, CameraState& camera, float dt) {
     }
 }
 
+MeshData make_tile_center_mesh(const tiling::TilingPatch& patch) {
+    MeshData mesh;
+    const float marker_radius = 0.012F;
+
+    for (const tiling::Tile& tile : patch.tiles) {
+        const math::Vec2 projected = math::project_to_poincare_disk(tile.center);
+        const glm::vec3 center{static_cast<float>(projected.x), static_cast<float>(projected.y), 0.0F};
+        const float depth_factor = static_cast<float>(tile.depth) / 4.0F;
+        const glm::vec3 color{
+            tile.depth == 0 ? 0.95F : 0.25F + 0.10F * depth_factor,
+            tile.depth == 0 ? 0.90F : 0.75F - 0.08F * depth_factor,
+            tile.depth == 0 ? 0.25F : 0.95F,
+        };
+
+        const unsigned int base = static_cast<unsigned int>(mesh.vertices.size());
+        mesh.vertices.push_back(Vertex{center + glm::vec3{-marker_radius, -marker_radius, 0.0F}, color});
+        mesh.vertices.push_back(Vertex{center + glm::vec3{marker_radius, -marker_radius, 0.0F}, color});
+        mesh.vertices.push_back(Vertex{center + glm::vec3{marker_radius, marker_radius, 0.0F}, color});
+        mesh.vertices.push_back(Vertex{center + glm::vec3{-marker_radius, marker_radius, 0.0F}, color});
+
+        mesh.indices.push_back(base + 0U);
+        mesh.indices.push_back(base + 1U);
+        mesh.indices.push_back(base + 2U);
+        mesh.indices.push_back(base + 0U);
+        mesh.indices.push_back(base + 2U);
+        mesh.indices.push_back(base + 3U);
+    }
+
+    return mesh;
+}
+
 glm::mat4 camera_matrix(const CameraState& camera, int width, int height) {
     const float aspect = height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0F;
+    const math::Vec2 projected_position = math::project_to_poincare_disk(camera.frame.position);
+    const glm::vec2 center{static_cast<float>(projected_position.x), static_cast<float>(projected_position.y)};
     const glm::mat4 projection =
         glm::ortho(-aspect * camera.zoom, aspect * camera.zoom, -camera.zoom, camera.zoom, -1.0F, 1.0F);
-    const glm::mat4 view = glm::translate(glm::mat4{1.0F}, glm::vec3{-camera.center.x, -camera.center.y, 0.0F});
+    const glm::mat4 view = glm::translate(glm::mat4{1.0F}, glm::vec3{-center.x, -center.y, 0.0F});
     return projection * view;
 }
 
@@ -117,9 +159,11 @@ void App::run() {
     glfwGetFramebufferSize(window, &width, &height);
     glViewport(0, 0, width, height);
 
-    ShaderProgram shader = ShaderProgram::from_files(resolve_shader_path("basic.vert"), resolve_shader_path("basic.frag"));
+    ShaderProgram shader =
+        ShaderProgram::from_files(resolve_shader_path("basic.vert"), resolve_shader_path("basic.frag"));
+    const tiling::TilingPatch patch = tiling::generate_tiling_patch(math::RegularTilingParameters{4, 6}, 3);
     Mesh mesh;
-    mesh.upload(make_test_triangle_mesh());
+    mesh.upload(make_tile_center_mesh(patch));
 
     CameraState camera;
     auto previous_time = std::chrono::steady_clock::now();

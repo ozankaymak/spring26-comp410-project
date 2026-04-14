@@ -34,8 +34,52 @@ Minkowski product:
 <v, v>_M > 0
 ```
 
-Camera movement will be represented with Lorentz isometries. Those transforms
-must preserve the Minkowski product and keep positions on the future sheet.
+Movement is represented with Lorentz isometries. Those transforms preserve the
+Minkowski product and keep positions on the future sheet.
+
+## Motion
+
+A local movement vector `(dx, dy)` is treated as a tangent displacement in the
+current frame. Its hyperbolic length is:
+
+```text
+d = sqrt(dx^2 + dy^2)
+```
+
+For `d > 0`, the unit tangent direction is:
+
+```text
+nx = dx / d
+ny = dy / d
+```
+
+The local Lorentz boost is:
+
+```text
+[ cosh(d)       sinh(d) nx                  sinh(d) ny                ]
+[ sinh(d) nx    1 + (cosh(d)-1) nx^2        (cosh(d)-1) nx ny         ]
+[ sinh(d) ny    (cosh(d)-1) nx ny           1 + (cosh(d)-1) ny^2      ]
+```
+
+The camera frame stores three vectors:
+
+```text
+position, forward, right
+```
+
+They are kept orthonormal under the Minkowski product:
+
+```text
+<position, position>_M = -1
+<forward, forward>_M = 1
+<right, right>_M = 1
+<position, forward>_M = 0
+<position, right>_M = 0
+<forward, right>_M = 0
+```
+
+After each movement update, the frame is orthonormalized again to remove small
+floating-point drift.
 
 ## Regular `{4,6}` Tiling
 
@@ -90,6 +134,11 @@ edge          = 1.762747174039086
 inradius      = 0.6584789484624083
 circumradius  = 1.1462158347805889
 ```
+
+The current topology generator builds a finite patch by reflecting the root
+tile across its sides. Each side reflection is a Lorentz isometry, so generated
+tile centers stay on the hyperboloid. Duplicate centers are merged with a small
+distance tolerance during breadth-first expansion.
 
 ## Projection Helpers
 
