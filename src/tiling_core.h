@@ -28,5 +28,11 @@ TilingPatch generate_tiling_patch(math::RegularTilingParameters parameters, int 
                                   double duplicate_tolerance = 1.0e-6);
 bool has_duplicate_centers(const TilingPatch& patch, double tolerance);
 
+// Find the tile that contains the given position in the tiling patch.
+int find_current_tile(const TilingPatch& patch, const math::Vec3& position);
+
+// Rebase the camera frame to be relative to the given tile.
+math::CameraFrame rebase_frame_to_tile(const math::CameraFrame& frame, const Tile& tile);
+
 } // namespace hyper::tiling
 
