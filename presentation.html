@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Hyperbolica - Interactive Curved-Space Rendering</title>
+  <title>HyperGL - Interactive Curved-Space Rendering</title>
 
   <!-- Reveal.js CSS -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reset.min.css">
@@ -49,6 +49,13 @@
     .small-text { font-size: 0.65em; line-height: 1.4; text-align: left; }
     .box-container { display: flex; gap: 20px; justify-content: space-around; margin-top: 30px;}
     .box { background: rgba(255,255,255,0.05); padding: 20px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); flex: 1;}
+    .compact-grid { gap: 14px; margin-top: 14px; }
+    .compact-grid:first-of-type { margin-top: 18px; }
+    .compact-grid .box { padding: 14px 16px; }
+    .compact-grid h4 { margin: 0 0 8px 0; font-size: 0.72em; }
+    .compact-grid p { margin: 0; font-size: 0.78em; line-height: 1.22; }
+    .kbd { color: var(--cyan); font-family: monospace; font-weight: 700; }
+    .metric { color: var(--pink); font-family: monospace; }
     
     /* SVG stlying */
     .geodesic-path { fill: none; stroke: var(--cyan); stroke-width: 4; stroke-dasharray: 10; animation: dash 2s linear infinite; }
@@ -68,9 +75,9 @@
 
       <!-- Slide 1: Introduction -->
       <section>
-        <h1>Hyperbolica</h1>
-        <h3>Interactive Curved-Space Rendering</h3>
-        <p style="font-size: 0.8em; opacity: 0.8; margin-top: 40px;">Breaking the Rules of Euclidean Geometry in C++17</p>
+        <h1>HyperGL</h1>
+        <h3>Interactive Hyperbolic Tiling Renderer</h3>
+        <p style="font-size: 0.8em; opacity: 0.8; margin-top: 40px;">A C++17 / OpenGL experiment for generating and visualizing regular <span class="metric">{p,q}</span> tilings</p>
       </section>
 
       <!-- Slide 2: Motivation & Goal -->
@@ -79,11 +86,11 @@
         <div class="box-container small-text">
           <div class="box">
             <h4 class="highlight-cyan">The Problem</h4>
-            <p>Our screens and standard rendering engines (OpenGL) are fundamentally built for <strong>Euclidean</strong> (flat) geometry. Rendering spaces with constant negative curvature natively is impossible in 3D without distortion.</p>
+            <p>OpenGL draws in flat screen space, while the demo world lives in the hyperbolic plane. We need curved-space math, but still have to feed ordinary vertices, indices, and shader uniforms to the GPU.</p>
           </div>
           <div class="box">
             <h4 class="highlight-pink">The Goal</h4>
-            <p>To create a bespoke real-time engine that perfectly simulates walking through a hyperbolic plane, specifically visualising a <strong>{4,6} tiling</strong> (where 6 squares meet at every single vertex).</p>
+            <p>Build the mathematical and rendering foundation for hyperbolic scenes: finite regular <span class="metric">{p,q}</span> patches, geodesic mesh generation, projection shaders, and runtime controls for comparing tilings.</p>
           </div>
         </div>
       </section>
@@ -95,12 +102,43 @@
         <div style="display: flex; gap: 20px; place-items: center; justify-content: center; margin-top: 40px;">
           <div class="box small-text" style="text-align: center; border-color: var(--cyan);">
             <strong>Math Layer</strong><br/>
-            <span style="opacity: 0.7;">Hyperboloid model, metrics, distance calculations, isometries.</span>
+            <span style="opacity: 0.7;">Hyperboloid model, distance, Lorentz isometries, regular tiling metrics.</span>
+          </div>
+          <div style="font-size: 2em; opacity: 0.5;">&rarr;</div>
+          <div class="box small-text" style="text-align: center; border-color: rgba(255,255,255,0.25);">
+            <strong>Tiling Layer</strong><br/>
+            <span style="opacity: 0.7;">Finite BFS patches, duplicate center merging, tile crossing and rebasing.</span>
           </div>
           <div style="font-size: 2em; opacity: 0.5;">&rarr;</div>
           <div class="box small-text" style="text-align: center; border-color: var(--pink);">
             <strong>App & Rendering Layer</strong><br/>
-            <span style="opacity: 0.7;">GLFW window, dynamic mesh generation, shader uniforms.</span>
+            <span style="opacity: 0.7;">GLFW window, OpenGL meshes, Poincare projection shader, built-in overlay.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Slide 4: Current Scope -->
+      <section>
+        <h2>Current Scope</h2>
+        <div class="box-container small-text">
+          <div class="box">
+            <h4 class="highlight-cyan">Implemented</h4>
+            <ul>
+              <li>Regular hyperbolic <span class="metric">{p,q}</span> tilings</li>
+              <li>Geodesic floor mesh and grid rendering</li>
+              <li>Poincare disk projection and distance fog</li>
+              <li>Runtime debug overlay and tiling hotkeys</li>
+              <li>CTest coverage for math, rendering, and tiling topology</li>
+            </ul>
+          </div>
+          <div class="box">
+            <h4 class="highlight-pink">Current Focus</h4>
+            <ul>
+              <li>Correct <span class="metric">{p,q}</span> counts at corners</li>
+              <li>Stable tile generation through reflections</li>
+              <li>Adjustable tessellation density</li>
+              <li>Projected tiling view before full navigation</li>
+            </ul>
           </div>
         </div>
       </section>
@@ -108,7 +146,7 @@
       <!-- Slide 4: Tessellation & Geodesics -->
       <section>
         <h2>The Tessellation Challenge</h2>
-        <p class="small-text">In OpenGL, a line between two vertices is always drawn straight. But in hyperbolic space, straight lines (geodesics) appear beautifully curved when projected to our screen.</p>
+        <p class="small-text">In OpenGL, a line between two vertices is screen-linear. Hyperbolic geodesics are mathematically straight inside the curved space, but they appear curved after projection to the disk.</p>
         
         <svg width="400" height="200" viewBox="0 0 400 200" style="margin-top: 20px; background: rgba(0,0,0,0.3); border-radius: 10px;">
           <!-- Straight line -->
@@ -129,35 +167,74 @@
         <div class="box-container small-text" style="align-items: stretch;">
           <div class="box">
             <h4 class="highlight-cyan">Edge Segments</h4>
-            <p>If we try to draw a hyperbolic square with only 4 vertices, it collapses into flat geometry. By defining <strong>Edge Segments</strong>, we calculate intermediate vertices along the true geodesic path using <code>math::geodesic_lerp</code>.</p>
+            <p>If a tile edge has only its endpoints, projection makes the boundary look too flat. Edge segments sample intermediate points with <code>math::geodesic_lerp</code>.</p>
           </div>
           <div class="box">
             <h4 class="highlight-pink">Radial Bands</h4>
-            <p>Just curving the edges isn't enough; the <em>interior</em> face of the tile must also correctly curve into the distance! <strong>Radial Bands</strong> tessellate the inner face from the center to the edges, ensuring perfect depth interpolation.</p>
+            <p>Curving only the boundary is not enough. Radial bands tessellate the face from tile center to boundary, so the filled floor follows the projected geometry more closely.</p>
           </div>
         </div>
       </section>
 
-      <!-- Slide 6: Continuous Movement -->
+      <!-- Slide 6: p q Presets -->
       <section>
-        <h2>Infinite Walking</h2>
-        <h4 style="opacity: 0.8;">The Frame Re-basing Solution</h4>
-        <ul class="spaced small-text" style="width: 80%; margin: 0 auto; margin-top: 30px;">
-          <li class="fragment"><strong>The Issue:</strong> As you travel further from the origin (0,0) in hyperbolic space, coordinates grow exponentially. Floating point precision completely fails, causing jitter and tearing.</li>
-          <li class="fragment"><strong>The Fix:</strong> We don't move the camera infinitely. We lock the camera within a "local tile".</li>
-          <li class="fragment"><strong>Seamless Crossing:</strong> Every time we cross a tile edge, we secretly teleport back to the center of the <em>new</em> tile, applying a mathematical transformation (rebasing the frame) to make the transition invisible.</li>
-        </ul>
+        <h2>Regular <span class="metric">{p,q}</span> Presets</h2>
+        <p class="small-text" style="width: 84%; margin: 0 auto;">The current build can rebuild the patch and mesh at runtime. Here <span class="metric">p</span> is the polygon side count and <span class="metric">q</span> is the number of polygons meeting at each corner.</p>
+        <div class="box-container small-text compact-grid">
+          <div class="box">
+            <h4><span class="kbd">1</span> &nbsp; <span class="metric">{4,6}</span></h4>
+            <p>Squares, six around each corner.</p>
+          </div>
+          <div class="box">
+            <h4><span class="kbd">2</span> &nbsp; <span class="metric">{3,7}</span></h4>
+            <p>Triangles, seven around each corner.</p>
+          </div>
+        </div>
+        <div class="box-container small-text compact-grid">
+          <div class="box">
+            <h4><span class="kbd">3</span> &nbsp; <span class="metric">{5,4}</span></h4>
+            <p>Pentagons, four around each corner.</p>
+          </div>
+          <div class="box">
+            <h4><span class="kbd">4</span> &nbsp; <span class="metric">{7,3}</span></h4>
+            <p>Heptagons, three around each corner.</p>
+          </div>
+        </div>
       </section>
-      
-      <!-- Slide 7: UI & Interaction -->
+
+      <!-- Slide 7: Roadmap -->
       <section>
-        <h2>Interactive Debugging</h2>
-        <p class="small-text" style="width: 80%; margin: 0 auto;">Using <strong>Dear ImGui</strong>, we inject real-time controls over our engine's state:</p>
-        <ul class="spaced small-text" style="width: 80%; margin: 0 auto; margin-top: 20px;">
-          <li>Toggle Floor Grid &amp; Wireframes to expose the underlying `{4,6}` tessellation.</li>
-          <li>Dynamically adjust Edge Segments &amp; Radial Bands to see the mesh curvature rebuild instantly.</li>
-          <li>Control custom Lorentz-invariant distance fog algorithms directly in the shader.</li>
-        </ul>
+        <h2>Roadmap</h2>
+        <div class="box-container small-text compact-grid">
+          <div class="box">
+            <h4 class="highlight-cyan">Navigation</h4>
+            <p>Move from the current projected tiling view toward a real first-person camera. The planned approach is tile-local camera state plus rebasing when crossing tile edges.</p>
+          </div>
+          <div class="box">
+            <h4 class="highlight-pink">Minimap</h4>
+            <p>Add a small disk view of nearby tile centers and edges so it is easier to explain where the camera is inside the generated patch.</p>
+          </div>
+        </div>
+        <div class="box-container small-text compact-grid">
+          <div class="box">
+            <h4 class="highlight-cyan">Shading</h4>
+            <p>Upgrade from flat tile colors and fog toward clearer depth cues: better palettes, lighting-style gradients, edge emphasis, and distance-based atmosphere.</p>
+          </div>
+          <div class="box">
+            <h4 class="highlight-pink">Scene Detail</h4>
+            <p>Introduce simple landmarks or props after the math and navigation feel stable, so the space has recognizable scale and orientation.</p>
+          </div>
+        </div>
+        <div class="box-container small-text compact-grid">
+          <div class="box">
+            <h4 class="highlight-cyan">Spherical Geometry</h4>
+            <p>Generalize the geometry layer beyond negative curvature so the same renderer can compare hyperbolic tilings with spherical regular tilings.</p>
+          </div>
+          <div class="box">
+            <h4 class="highlight-pink">Projection Choices</h4>
+            <p>Add explicit projection modes for each geometry, including disk projections for hyperbolic space and a suitable view for spherical patches.</p>
+          </div>
+        </div>
       </section>
 
       <!-- Slide 8: Let's see it -->
