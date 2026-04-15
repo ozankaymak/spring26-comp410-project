@@ -12,7 +12,7 @@ Current targets:
 - `hyperbolica_math_tests`: hyperboloid invariants, distance, normalization,
   projections, and `{4,6}` constants.
 - `hyperbolica_tiling_tests`: base polygon vertices, generated tile centers,
-  duplicate checks, and invalid tiling input.
+  duplicate checks, crossing detection, rebasing, and invalid tiling input.
 - `hyperbolica_render_tests`: shader file loading and triangle mesh data.
 
 Shared assertion helpers are in `tests/test_support.h`. The helpers are small

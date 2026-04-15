@@ -6,6 +6,7 @@ Current pieces:
 
 - hyperboloid-model math utilities
 - regular `{p,q}` tiling metric helpers
+- tile-local crossing and rebasing for walking across generated tiles
 - a GLFW/OpenGL application shell
 - shader and mesh wrappers
 - CTest tests
@@ -39,6 +40,17 @@ ctest --test-dir build --output-on-failure
 ./build/hyperbolica
 ```
 
+Progress-demo controls:
+
+- `WASD` or arrow keys: move across the `{4,6}` patch
+- `[` / `-`: decrease movement speed
+- `]` / `=`: increase movement speed
+- `Q` / `E`: zoom out/in
+- `Esc`: close the window
+
+The window title reports the current tile, tile depth, origin distance, speed,
+zoom, and generated tile count.
+
 ## Layout
 
 - `src/`: app, rendering, and math source files
@@ -52,3 +64,5 @@ ctest --test-dir build --output-on-failure
 - [Architecture](docs/architecture.md)
 - [Testing](docs/testing.md)
 - [Hyperbolic Geometry](docs/hyperbolic_geometry.md)
+- [Progress Demo Smoke Checklist](docs/progress_demo_smoke_checklist.md)
+- [Progress Report Draft](docs/progress_report_draft.md)

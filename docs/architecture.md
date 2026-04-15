@@ -25,7 +25,10 @@ tests/render_tests.cpp
 
 `app.cpp` creates the GLFW window, handles input, generates the current tiling
 patch, updates the camera matrix, binds the shader, and draws the uploaded
-mesh.
+mesh. The camera frame is stored in the current tile's local coordinates.
+When movement crosses a tile side, the app rebases the frame through the linked
+neighbor and converts back to global coordinates only for rendering and status
+output.
 
 `shader.cpp` reads GLSL files, compiles shaders, links a program, and sets
 uniforms.
@@ -37,7 +40,9 @@ by render tests.
 hyperboloid model, distance, projections, and regular tiling metrics.
 
 `src/tiling_core.cpp` uses the math layer to build finite `{p,q}` patches from
-base polygon vertices and side reflections.
+base polygon vertices and side reflections. It also owns tile-side crossing
+detection in the Klein disk and the local-frame rebasing operation used by the
+demo.
 
 The important boundary is that math code does not include OpenGL or GLFW. The
 app/rendering code can use GLAD, GLM, GLFW, and OpenGL.

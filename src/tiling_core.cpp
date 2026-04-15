@@ -1,6 +1,7 @@
 #include "tiling_core.h"
 
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -57,6 +58,10 @@ std::vector<math::Mat3> side_reflections(math::RegularTilingParameters parameter
 
 math::Vec3 tile_center_from_transform(const math::Mat3& transform) {
     return math::hyperboloid_normalize(math::apply_isometry(transform, math::origin()));
+}
+
+double cross2d(const math::Vec2& a, const math::Vec2& b) {
+    return a.x * b.y - a.y * b.x;
 }
 
 int find_existing_tile(const std::vector<Tile>& tiles, const math::Vec3& center, double tolerance) {
@@ -164,7 +169,47 @@ bool has_duplicate_centers(const TilingPatch& patch, double tolerance) {
     return false;
 }
 
+int locate_crossed_side(const TilingPatch& patch, const math::Vec3& tile_local_position,
+                        double tolerance) {
+    if (tolerance < 0.0) {
+        throw std::invalid_argument("crossing tolerance must be non-negative");
+    }
+    if (patch.base_polygon_vertices.size() < 3) {
+        return -1;
+    }
+
+    const math::Vec2 point = math::project_to_klein_disk(tile_local_position);
+    double worst_margin = -tolerance;
+    int crossed_side = -1;
+
+    for (std::size_t side = 0; side < patch.base_polygon_vertices.size(); ++side) {
+        const math::Vec2 a = math::project_to_klein_disk(patch.base_polygon_vertices[side]);
+        const math::Vec2 b =
+            math::project_to_klein_disk(patch.base_polygon_vertices[(side + 1U) % patch.base_polygon_vertices.size()]);
+        const math::Vec2 edge{b.x - a.x, b.y - a.y};
+        const math::Vec2 relative{point.x - a.x, point.y - a.y};
+
+        // Base vertices are generated counter-clockwise, so points inside the
+        // convex Klein-projected polygon stay on the left side of every edge.
+        const double margin = cross2d(edge, relative);
+        if (margin < worst_margin) {
+            worst_margin = margin;
+            crossed_side = static_cast<int>(side);
+        }
+    }
+
+    return crossed_side;
+}
+
 int find_current_tile(const TilingPatch& patch, const math::Vec3& position) {
+    for (const Tile& tile : patch.tiles) {
+        const math::Mat3 inverse_transform = math::inverse_isometry(tile.transform);
+        const math::Vec3 local_position = math::apply_isometry(inverse_transform, position);
+        if (locate_crossed_side(patch, local_position) < 0) {
+            return tile.id;
+        }
+    }
+
     int closest_tile = -1;
     double min_distance = std::numeric_limits<double>::max();
 
@@ -179,11 +224,58 @@ int find_current_tile(const TilingPatch& patch, const math::Vec3& position) {
     return closest_tile;
 }
 
+math::CameraFrame global_frame_from_tile(const math::CameraFrame& tile_local_frame, const Tile& tile) {
+    return math::apply_isometry(tile.transform, tile_local_frame);
+}
+
 math::CameraFrame rebase_frame_to_tile(const math::CameraFrame& frame, const Tile& tile) {
     // Apply the inverse of the tile's transform to the frame
     const math::Mat3 inverse_transform = math::inverse_isometry(tile.transform);
     return math::apply_isometry(inverse_transform, frame);
 }
 
-} // namespace hyper::tiling
+bool rebase_frame_across_edges(const TilingPatch& patch, int& current_tile_id,
+                               math::CameraFrame& tile_local_frame, int max_crossings) {
+    if (max_crossings < 0) {
+        throw std::invalid_argument("max crossings must be non-negative");
+    }
+    if (current_tile_id < 0 || current_tile_id >= static_cast<int>(patch.tiles.size())) {
+        return false;
+    }
 
+    int tile_id = current_tile_id;
+    math::CameraFrame frame = tile_local_frame;
+
+    for (int crossing = 0; crossing < max_crossings; ++crossing) {
+        const int crossed_side = locate_crossed_side(patch, frame.position);
+        if (crossed_side < 0) {
+            current_tile_id = tile_id;
+            tile_local_frame = frame;
+            return true;
+        }
+
+        const Tile& tile = patch.tiles[static_cast<std::size_t>(tile_id)];
+        if (crossed_side >= static_cast<int>(tile.neighbors.size())) {
+            return false;
+        }
+
+        const int next_tile_id = tile.neighbors[static_cast<std::size_t>(crossed_side)];
+        if (next_tile_id < 0 || next_tile_id >= static_cast<int>(patch.tiles.size())) {
+            return false;
+        }
+
+        const math::CameraFrame global_frame = global_frame_from_tile(frame, tile);
+        frame = rebase_frame_to_tile(global_frame, patch.tiles[static_cast<std::size_t>(next_tile_id)]);
+        tile_id = next_tile_id;
+    }
+
+    if (locate_crossed_side(patch, frame.position) < 0) {
+        current_tile_id = tile_id;
+        tile_local_frame = frame;
+        return true;
+    }
+
+    return false;
+}
+
+} // namespace hyper::tiling
