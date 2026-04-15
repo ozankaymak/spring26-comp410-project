@@ -7,7 +7,9 @@
 
 #include <chrono>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -15,12 +17,13 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-// #include <imgui.h>
-// #include <imgui_impl_glfw.h>
-// #include <imgui_impl_opengl3.h>
 
 namespace hyper {
 namespace {
+
+constexpr int kProgressDemoTilingDepth = 5;
+constexpr float kMinMoveSpeed = 0.25F;
+constexpr float kMaxMoveSpeed = 6.0F;
 
 struct GlfwContext {
     GlfwContext() {
@@ -37,6 +40,7 @@ struct GlfwContext {
 struct CameraState {
     math::CameraFrame frame = math::canonical_frame();
     float zoom = 1.0F;
+    float move_speed = 2.5F;
     int current_tile_id = 0;
 };
 
@@ -63,7 +67,16 @@ void process_input(GLFWwindow* window, CameraState& camera, const tiling::Tiling
         glfwSetWindowShouldClose(window, GLFW_TRUE);
     }
 
-    const double move_speed = 1.1 * static_cast<double>(dt);
+    if (glfwGetKey(window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS ||
+        glfwGetKey(window, GLFW_KEY_MINUS) == GLFW_PRESS) {
+        camera.move_speed = glm::max(camera.move_speed - 1.5F * dt, kMinMoveSpeed);
+    }
+    if (glfwGetKey(window, GLFW_KEY_RIGHT_BRACKET) == GLFW_PRESS ||
+        glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS) {
+        camera.move_speed = glm::min(camera.move_speed + 1.5F * dt, kMaxMoveSpeed);
+    }
+
+    const double move_speed = static_cast<double>(camera.move_speed) * static_cast<double>(dt);
     math::Vec2 local_delta{};
 
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
@@ -80,14 +93,12 @@ void process_input(GLFWwindow* window, CameraState& camera, const tiling::Tiling
     }
 
     if (local_delta.x != 0.0 || local_delta.y != 0.0) {
-        camera.frame = math::move_frame(camera.frame, local_delta);
+        math::CameraFrame moved_frame = math::move_frame(camera.frame, local_delta);
+        int moved_tile_id = camera.current_tile_id;
 
-        // Check if we crossed into a new tile
-        const int new_tile_id = tiling::find_current_tile(patch, camera.frame.position);
-        if (new_tile_id != camera.current_tile_id && new_tile_id >= 0) {
-            const tiling::Tile& new_tile = patch.tiles[static_cast<std::size_t>(new_tile_id)];
-            camera.frame = tiling::rebase_frame_to_tile(camera.frame, new_tile);
-            camera.current_tile_id = new_tile_id;
+        if (tiling::rebase_frame_across_edges(patch, moved_tile_id, moved_frame)) {
+            camera.frame = moved_frame;
+            camera.current_tile_id = moved_tile_id;
         }
     }
 
@@ -157,14 +168,36 @@ MeshData make_grid_mesh(const tiling::TilingPatch& patch) {
     return mesh;
 }
 
-glm::mat4 camera_matrix(const CameraState& camera, int width, int height) {
+math::CameraFrame global_camera_frame(const CameraState& camera, const tiling::TilingPatch& patch) {
+    const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(camera.current_tile_id)];
+    return tiling::global_frame_from_tile(camera.frame, tile);
+}
+
+glm::mat4 camera_matrix(const CameraState& camera, const tiling::TilingPatch& patch, int width, int height) {
     const float aspect = height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0F;
-    const math::Vec2 projected_position = math::project_to_poincare_disk(camera.frame.position);
+    const math::Vec2 projected_position = math::project_to_poincare_disk(global_camera_frame(camera, patch).position);
     const glm::vec2 center{static_cast<float>(projected_position.x), static_cast<float>(projected_position.y)};
     const glm::mat4 projection =
         glm::ortho(-aspect * camera.zoom, aspect * camera.zoom, -camera.zoom, camera.zoom, -1.0F, 1.0F);
     const glm::mat4 view = glm::translate(glm::mat4{1.0F}, glm::vec3{-center.x, -center.y, 0.0F});
     return projection * view;
+}
+
+void update_window_title(GLFWwindow* window, const CameraState& camera, const tiling::TilingPatch& patch) {
+    const math::CameraFrame global_frame = global_camera_frame(camera, patch);
+    const double origin_distance = math::intrinsic_distance(math::origin(), global_frame.position);
+    const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(camera.current_tile_id)];
+
+    std::ostringstream title;
+    title << std::fixed << std::setprecision(2)
+          << "Hyperbolica | tile " << camera.current_tile_id
+          << " depth " << tile.depth
+          << " | d(origin) " << origin_distance
+          << " | speed " << camera.move_speed
+          << " | zoom " << camera.zoom
+          << " | tiles " << patch.tiles.size()
+          << " | -/= speed, Q/E zoom";
+    glfwSetWindowTitle(window, title.str().c_str());
 }
 
 } // namespace
@@ -193,15 +226,6 @@ void App::run() {
         throw std::runtime_error("failed to initialize GLAD");
     }
 
-    // // Initialize ImGui
-    // IMGUI_CHECKVERSION();
-    // ImGui::CreateContext();
-    // ImGuiIO& io = ImGui::GetIO();
-    // io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    // ImGui::StyleColorsDark();
-    // ImGui_ImplGlfw_InitForOpenGL(window, true);
-    // ImGui_ImplOpenGL3_Init("#version 330");
-
     int width = 0;
     int height = 0;
     glfwGetFramebufferSize(window, &width, &height);
@@ -209,13 +233,16 @@ void App::run() {
 
     ShaderProgram shader =
         ShaderProgram::from_files(resolve_shader_path("basic.vert"), resolve_shader_path("basic.frag"));
-    const tiling::TilingPatch patch = tiling::generate_tiling_patch(math::RegularTilingParameters{4, 6}, 3);
+    const tiling::TilingPatch patch =
+        tiling::generate_tiling_patch(math::RegularTilingParameters{4, 6}, kProgressDemoTilingDepth);
     Mesh center_mesh;
     center_mesh.upload(make_tile_center_mesh(patch));
     Mesh grid_mesh;
     grid_mesh.upload(make_grid_mesh(patch));
 
     CameraState camera;
+    update_window_title(window, camera, patch);
+    float title_update_accumulator = 0.0F;
     auto previous_time = std::chrono::steady_clock::now();
 
     while (glfwWindowShouldClose(window) == GLFW_FALSE) {
@@ -225,6 +252,11 @@ void App::run() {
 
         glfwPollEvents();
         process_input(window, camera, patch, dt);
+        title_update_accumulator += dt;
+        if (title_update_accumulator >= 0.25F) {
+            update_window_title(window, camera, patch);
+            title_update_accumulator = 0.0F;
+        }
 
         glfwGetFramebufferSize(window, &width, &height);
 
@@ -232,42 +264,18 @@ void App::run() {
         glClear(GL_COLOR_BUFFER_BIT);
 
         shader.use();
-        shader.set_mat4("u_mvp", camera_matrix(camera, width, height));
+        shader.set_mat4("u_mvp", camera_matrix(camera, patch, width, height));
 
         // Draw grid
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-        grid_mesh.draw();
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        grid_mesh.draw_lines();
 
         // Draw centers
         center_mesh.draw();
-
-        // // ImGui HUD
-        // ImGui_ImplOpenGL3_NewFrame();
-        // ImGui_ImplGlfw_NewFrame();
-        // ImGui::NewFrame();
-
-        // ImGui::Begin("Hyperbolica Debug");
-        // ImGui::Text("Tile ID: %d", camera.current_tile_id);
-        // ImGui::Text("Depth: %d", patch.tiles[static_cast<size_t>(camera.current_tile_id)].depth);
-        // const math::Vec2 pos_proj = math::project_to_poincare_disk(camera.frame.position);
-        // ImGui::Text("Position: (%.3f, %.3f)", pos_proj.x, pos_proj.y);
-        // ImGui::Text("Zoom: %.2f", camera.zoom);
-        // ImGui::Text("Tiles: %zu", patch.tiles.size());
-        // ImGui::End();
-
-        // ImGui::Render();
-        // ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         glfwSwapBuffers(window);
     }
 
     glfwDestroyWindow(window);
-
-    // // Shutdown ImGui
-    // ImGui_ImplOpenGL3_Shutdown();
-    // ImGui_ImplGlfw_Shutdown();
-    // ImGui::DestroyContext();
 }
 
 } // namespace hyper

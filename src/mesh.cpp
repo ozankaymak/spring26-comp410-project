@@ -82,6 +82,16 @@ void Mesh::draw() const {
     glBindVertexArray(0);
 }
 
+void Mesh::draw_lines() const {
+    if (!uploaded()) {
+        return;
+    }
+
+    glBindVertexArray(vao_);
+    glDrawElements(GL_LINES, index_count_, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+}
+
 void Mesh::reset() {
     if (ebo_ != 0) {
         glDeleteBuffers(1, &ebo_);
@@ -110,4 +120,3 @@ GLsizei Mesh::index_count() const {
 }
 
 } // namespace hyper
-

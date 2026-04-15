@@ -32,6 +32,7 @@ public:
 
     void upload(const MeshData& data);
     void draw() const;
+    void draw_lines() const;
     void reset();
 
     bool uploaded() const;
@@ -45,4 +46,3 @@ private:
 };
 
 } // namespace hyper
-

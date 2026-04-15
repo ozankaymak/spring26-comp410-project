@@ -31,8 +31,19 @@ bool has_duplicate_centers(const TilingPatch& patch, double tolerance);
 // Find the tile that contains the given position in the tiling patch.
 int find_current_tile(const TilingPatch& patch, const math::Vec3& position);
 
-// Rebase the camera frame to be relative to the given tile.
+// Returns the crossed base-polygon side for a tile-local position, or -1 when
+// the position is still inside the current tile.
+int locate_crossed_side(const TilingPatch& patch, const math::Vec3& tile_local_position,
+                        double tolerance = 1.0e-10);
+
+// Converts a tile-local camera frame into global patch coordinates.
+math::CameraFrame global_frame_from_tile(const math::CameraFrame& tile_local_frame, const Tile& tile);
+
+// Rebase a global camera frame to be relative to the given tile.
 math::CameraFrame rebase_frame_to_tile(const math::CameraFrame& frame, const Tile& tile);
 
-} // namespace hyper::tiling
+// Rebase a tile-local camera frame across any crossed tile edges.
+bool rebase_frame_across_edges(const TilingPatch& patch, int& current_tile_id,
+                               math::CameraFrame& tile_local_frame, int max_crossings = 8);
 
+} // namespace hyper::tiling
