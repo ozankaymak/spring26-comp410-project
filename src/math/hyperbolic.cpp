@@ -234,6 +234,22 @@ double intrinsic_distance(const Vec3& a, const Vec3& b) {
     return acosh_checked(-minkowski_dot(a, b));
 }
 
+Vec3 geodesic_lerp(const Vec3& a, const Vec3& b, double t) {
+    const double d = intrinsic_distance(a, b);
+    if (d < 1e-12) {
+        return a;
+    }
+
+    const double sa = std::sinh((1.0 - t) * d) / std::sinh(d);
+    const double sb = std::sinh(t * d) / std::sinh(d);
+
+    return hyperboloid_normalize(Vec3{
+        sa * a.t + sb * b.t,
+        sa * a.x + sb * b.x,
+        sa * a.y + sb * b.y,
+    });
+}
+
 Vec2 project_to_poincare_disk(const Vec3& p) {
     require_hyperboloid_point(p, "point");
     return Vec2{p.x / (p.t + 1.0), p.y / (p.t + 1.0)};

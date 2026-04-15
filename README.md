@@ -43,13 +43,16 @@ ctest --test-dir build --output-on-failure
 Progress-demo controls:
 
 - `WASD` or arrow keys: move across the `{4,6}` patch
+- Mouse drag: look around (when captured)
 - `[` / `-`: decrease movement speed
 - `]` / `=`: increase movement speed
 - `Q` / `E`: zoom out/in
-- `Esc`: close the window
+- `Esc`: release mouse and toggle Debug Settings Panel
 
 The window title reports the current tile, tile depth, origin distance, speed,
-zoom, and generated tile count.
+zoom, and generated tile count. The ImGui Debug Settings panel offers sliders
+for fog density, speed adjustment, tiling radial bands and geodesic subdivision,
+and toggles for showing the grid and wireframe models.
 
 ## Layout
 
