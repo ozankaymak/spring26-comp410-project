@@ -67,6 +67,34 @@ void test_neighbor_centers_are_one_tile_step_away() {
     }
 }
 
+int count_tiles_at_root_vertex(hyper::math::RegularTilingParameters parameters, int depth) {
+    const hyper::tiling::TilingPatch patch = hyper::tiling::generate_tiling_patch(parameters, depth);
+    const hyper::math::Vec3 target = patch.base_polygon_vertices[0];
+
+    int count = 0;
+    for (const hyper::tiling::Tile& tile : patch.tiles) {
+        bool touches_target = false;
+        for (const hyper::math::Vec3& local_vertex : patch.base_polygon_vertices) {
+            const hyper::math::Vec3 global_vertex = hyper::math::apply_isometry(tile.transform, local_vertex);
+            if (hyper::math::intrinsic_distance(target, global_vertex) < 1.0e-5) {
+                touches_target = true;
+            }
+        }
+        if (touches_target) {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+void test_corner_tile_count_matches_q() {
+    require(count_tiles_at_root_vertex(hyper::math::RegularTilingParameters{4, 6}, 5) == 6,
+            "{4,6} has six squares around an interior corner");
+    require(count_tiles_at_root_vertex(hyper::math::RegularTilingParameters{3, 7}, 6) == 7,
+            "{3,7} has seven triangles around an interior corner");
+}
+
 void test_patch_rejects_invalid_inputs() {
     require_throws<std::invalid_argument>(
         [] { (void)hyper::tiling::generate_tiling_patch(hyper::math::RegularTilingParameters{4, 6}, -1); },
@@ -130,6 +158,7 @@ int main() {
         test_base_polygon_vertices();
         test_patch_depth_and_centers();
         test_neighbor_centers_are_one_tile_step_away();
+        test_corner_tile_count_matches_q();
         test_patch_rejects_invalid_inputs();
         test_find_current_tile_and_rebasing();
     });

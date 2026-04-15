@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Hyperbolica - Interactive Curved-Space Rendering</title>
+
+  <!-- Reveal.js CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reset.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/theme/night.min.css" id="theme">
+
+  <style>
+    :root {
+      --cyan: #00f0ff;
+      --pink: #ff0055;
+      --grid-color: rgba(255, 255, 255, 0.1);
+    }
+    .reveal .slide-background {
+      background: radial-gradient(circle at center, #1a1a24 0%, #0d0d12 100%);
+    }
+    /* Simple CSS animated background to simulate a moving space */
+    .space-grid {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-size: 50px 50px;
+      background-image: 
+        linear-gradient(to right, var(--grid-color) 1px, transparent 1px),
+        linear-gradient(to bottom, var(--grid-color) 1px, transparent 1px);
+      transform: perspective(500px) rotateX(60deg) translateY(-100px) translateZ(-200px);
+      animation: traveling 10s linear infinite;
+      z-index: -1;
+      opacity: 0.3;
+    }
+    @keyframes traveling {
+      from { background-position: 0 0; }
+      to { background-position: 0 50px; }
+    }
+    .reveal h1, .reveal h2, .reveal h3 {
+      text-transform: none;
+      letter-spacing: 1px;
+    }
+    .reveal h1 { color: var(--cyan); text-shadow: 0 0 20px rgba(0,240,255,0.4); }
+    .reveal h2 { color: var(--pink); }
+    
+    .highlight-cyan { color: var(--cyan); }
+    .highlight-pink { color: var(--pink); }
+    
+    .small-text { font-size: 0.65em; line-height: 1.4; text-align: left; }
+    .box-container { display: flex; gap: 20px; justify-content: space-around; margin-top: 30px;}
+    .box { background: rgba(255,255,255,0.05); padding: 20px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); flex: 1;}
+    
+    /* SVG stlying */
+    .geodesic-path { fill: none; stroke: var(--cyan); stroke-width: 4; stroke-dasharray: 10; animation: dash 2s linear infinite; }
+    .straight-path { fill: none; stroke: rgba(255,255,255,0.3); stroke-width: 4; }
+    .point { fill: var(--pink); }
+    @keyframes dash {
+      to { stroke-dashoffset: -20; }
+    }
+
+  </style>
+</head>
+<body>
+
+  <div class="reveal">
+    <div class="space-grid"></div>
+    <div class="slides">
+
+      <!-- Slide 1: Introduction -->
+      <section>
+        <h1>Hyperbolica</h1>
+        <h3>Interactive Curved-Space Rendering</h3>
+        <p style="font-size: 0.8em; opacity: 0.8; margin-top: 40px;">Breaking the Rules of Euclidean Geometry in C++17</p>
+      </section>
+
+      <!-- Slide 2: Motivation & Goal -->
+      <section>
+        <h2>Motivation & Goal</h2>
+        <div class="box-container small-text">
+          <div class="box">
+            <h4 class="highlight-cyan">The Problem</h4>
+            <p>Our screens and standard rendering engines (OpenGL) are fundamentally built for <strong>Euclidean</strong> (flat) geometry. Rendering spaces with constant negative curvature natively is impossible in 3D without distortion.</p>
+          </div>
+          <div class="box">
+            <h4 class="highlight-pink">The Goal</h4>
+            <p>To create a bespoke real-time engine that perfectly simulates walking through a hyperbolic plane, specifically visualising a <strong>{4,6} tiling</strong> (where 6 squares meet at every single vertex).</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Slide 3: Architecture -->
+      <section>
+        <h2>The Architecture</h2>
+        <p class="small-text">A strict separation of concerns allows us to do complex non-Euclidean math without confusing the graphics pipeline.</p>
+        <div style="display: flex; gap: 20px; place-items: center; justify-content: center; margin-top: 40px;">
+          <div class="box small-text" style="text-align: center; border-color: var(--cyan);">
+            <strong>Math Layer</strong><br/>
+            <span style="opacity: 0.7;">Hyperboloid model, metrics, distance calculations, isometries.</span>
+          </div>
+          <div style="font-size: 2em; opacity: 0.5;">&rarr;</div>
+          <div class="box small-text" style="text-align: center; border-color: var(--pink);">
+            <strong>App & Rendering Layer</strong><br/>
+            <span style="opacity: 0.7;">GLFW window, dynamic mesh generation, shader uniforms.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Slide 4: Tessellation & Geodesics -->
+      <section>
+        <h2>The Tessellation Challenge</h2>
+        <p class="small-text">In OpenGL, a line between two vertices is always drawn straight. But in hyperbolic space, straight lines (geodesics) appear beautifully curved when projected to our screen.</p>
+        
+        <svg width="400" height="200" viewBox="0 0 400 200" style="margin-top: 20px; background: rgba(0,0,0,0.3); border-radius: 10px;">
+          <!-- Straight line -->
+          <line x1="50" y1="150" x2="350" y2="150" class="straight-path" />
+          <text x="200" y="180" fill="white" font-size="14" text-anchor="middle" opacity="0.5">1 Edge Segment (Euclidean)</text>
+          
+          <!-- Curved geodesic representation -->
+          <path d="M 50 150 Q 200 50 350 150" class="geodesic-path" />
+          <circle cx="50" cy="150" r="6" class="point" />
+          <circle cx="350" cy="150" r="6" class="point" />
+          <text x="200" y="80" fill="var(--cyan)" font-size="14" text-anchor="middle">Many Edge Segments (Geodesic Curve)</text>
+        </svg>
+      </section>
+
+      <!-- Slide 5: Edge Segments & Radial Bands -->
+      <section>
+        <h2>Dynamic Mesh Rebuilding</h2>
+        <div class="box-container small-text" style="align-items: stretch;">
+          <div class="box">
+            <h4 class="highlight-cyan">Edge Segments</h4>
+            <p>If we try to draw a hyperbolic square with only 4 vertices, it collapses into flat geometry. By defining <strong>Edge Segments</strong>, we calculate intermediate vertices along the true geodesic path using <code>math::geodesic_lerp</code>.</p>
+          </div>
+          <div class="box">
+            <h4 class="highlight-pink">Radial Bands</h4>
+            <p>Just curving the edges isn't enough; the <em>interior</em> face of the tile must also correctly curve into the distance! <strong>Radial Bands</strong> tessellate the inner face from the center to the edges, ensuring perfect depth interpolation.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Slide 6: Continuous Movement -->
+      <section>
+        <h2>Infinite Walking</h2>
+        <h4 style="opacity: 0.8;">The Frame Re-basing Solution</h4>
+        <ul class="spaced small-text" style="width: 80%; margin: 0 auto; margin-top: 30px;">
+          <li class="fragment"><strong>The Issue:</strong> As you travel further from the origin (0,0) in hyperbolic space, coordinates grow exponentially. Floating point precision completely fails, causing jitter and tearing.</li>
+          <li class="fragment"><strong>The Fix:</strong> We don't move the camera infinitely. We lock the camera within a "local tile".</li>
+          <li class="fragment"><strong>Seamless Crossing:</strong> Every time we cross a tile edge, we secretly teleport back to the center of the <em>new</em> tile, applying a mathematical transformation (rebasing the frame) to make the transition invisible.</li>
+        </ul>
+      </section>
+      
+      <!-- Slide 7: UI & Interaction -->
+      <section>
+        <h2>Interactive Debugging</h2>
+        <p class="small-text" style="width: 80%; margin: 0 auto;">Using <strong>Dear ImGui</strong>, we inject real-time controls over our engine's state:</p>
+        <ul class="spaced small-text" style="width: 80%; margin: 0 auto; margin-top: 20px;">
+          <li>Toggle Floor Grid &amp; Wireframes to expose the underlying `{4,6}` tessellation.</li>
+          <li>Dynamically adjust Edge Segments &amp; Radial Bands to see the mesh curvature rebuild instantly.</li>
+          <li>Control custom Lorentz-invariant distance fog algorithms directly in the shader.</li>
+        </ul>
+      </section>
+
+      <!-- Slide 8: Let's see it -->
+      <section>
+        <h1 class="highlight-cyan" style="font-size: 4em;">Live Demo</h1>
+        <p style="opacity: 0.6; margin-top: 30px;">Preparing to enter the non-Euclidean manifold...</p>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- Reveal.js Scripts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.js"></script>
+  <script>
+    Reveal.initialize({
+      hash: true,
+      transition: 'convex',
+      backgroundTransition: 'zoom',
+      controls: true,
+      progress: true,
+      center: true,
+    });
+  </script>
+
+</body>
+</html>
