@@ -22,8 +22,8 @@ void main() {
     // So HypDist = acosh(t)
     vHypDist = acosh(max(viewPos.x, 1.0));
 
-    // Poincare projection
-    vec2 projected = vec2(viewPos.y, viewPos.z) / (viewPos.x + 1.0);
+    // Poincare projection: camera right maps to screen X, forward maps to screen Y.
+    vec2 projected = vec2(viewPos.z, viewPos.y) / (viewPos.x + 1.0);
 
     vColor = aColor;
     
