@@ -43,13 +43,25 @@ ctest --test-dir build --output-on-failure
 Progress-demo controls:
 
 - `WASD` or arrow keys: move across the `{4,6}` patch
+- Mouse drag: look around (when captured)
+- `1`: render `{4,6}` with six squares meeting at each corner
+- `2`: render `{3,7}` with seven triangles meeting at each corner
+- `3`: render `{5,4}`
+- `4`: render `{7,3}`
 - `[` / `-`: decrease movement speed
 - `]` / `=`: increase movement speed
 - `Q` / `E`: zoom out/in
-- `Esc`: close the window
+- `F1`: show or hide the debug overlay
+- `G`: toggle floor grid
+- `F`: toggle wireframe
+- `Z` / `X`: decrease/increase fog density
+- `C` / `V`: decrease/increase edge segments
+- `B` / `N`: decrease/increase radial bands
+- `Esc`: release or recapture the mouse
 
 The window title reports the current tile, tile depth, origin distance, speed,
-zoom, and generated tile count.
+zoom, and generated tile count. The built-in debug overlay mirrors the current
+runtime settings and avoids an external ImGui dependency.
 
 ## Layout
 
