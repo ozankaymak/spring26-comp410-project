@@ -31,6 +31,9 @@ namespace {
 constexpr int kProgressDemoTilingDepth = 5;
 constexpr float kMinMoveSpeed = 0.25F;
 constexpr float kMaxMoveSpeed = 8.0F;
+constexpr float kMinEyeHeight = 0.08F;
+constexpr float kMaxEyeHeight = 1.75F;
+constexpr float kEyeLiftSpeed = 0.95F;
 
 struct GlfwContext {
     GlfwContext() {
@@ -51,7 +54,7 @@ struct RenderSettings {
     bool show_wireframe = false;
     bool show_debug_ui = true;
     float fog_density = 0.50F;
-    glm::vec3 fog_color{0.08F, 0.10F, 0.09F};
+    glm::vec3 fog_color{0.07F, 0.085F, 0.095F};
     int edge_segments = 8;
     int radial_bands = 2;
 };
@@ -67,6 +70,8 @@ math::CameraFrame display_aligned_frame() {
 struct CameraState {
     math::CameraFrame frame = display_aligned_frame();
     float zoom = 1.0F;
+    float pitch = -0.28F;
+    float eye_height = 0.32F;
     float move_speed = 1.0F;
     int current_tile_id = 0;
 };
@@ -104,6 +109,11 @@ struct TilingPreset {
 };
 
 math::CameraFrame global_camera_frame(const CameraState& camera, const tiling::TilingPatch& patch);
+glm::vec4 h2_point_to_h3(const math::Vec3& point);
+void append_vertex(MeshData& mesh,
+                   const glm::vec4& position,
+                   const glm::vec3& normal,
+                   const glm::vec3& color);
 MeshData make_curved_tile_mesh(const tiling::TilingPatch& patch, int radial_bands, int edge_segments);
 MeshData make_grid_mesh(const tiling::TilingPatch& patch, int edge_segments);
 
@@ -399,7 +409,7 @@ private:
         const double origin_distance = math::intrinsic_distance(math::origin(), global_frame.position);
         const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(camera.current_tile_id)];
 
-        add_rect(10.0F, 10.0F, 392.0F, 306.0F, glm::vec4{0.02F, 0.03F, 0.04F, 0.78F});
+        add_rect(10.0F, 10.0F, 392.0F, 360.0F, glm::vec4{0.02F, 0.03F, 0.04F, 0.78F});
         add_rect(10.0F, 10.0F, 392.0F, 30.0F, glm::vec4{0.12F, 0.18F, 0.20F, 0.92F});
         add_text(20.0F, 19.0F, "DEBUG UI", 2.0F, glm::vec4{0.94F, 0.98F, 1.0F, 0.98F});
 
@@ -432,7 +442,12 @@ private:
         }
         {
             std::ostringstream text;
-            text << "Q/E ZOOM " << std::fixed << std::setprecision(2) << camera.zoom;
+            text << "Q/E VIEW ZOOM " << std::fixed << std::setprecision(2) << camera.zoom;
+            line(text.str(), value);
+        }
+        {
+            std::ostringstream text;
+            text << "SPACE/SHIFT HEIGHT " << std::fixed << std::setprecision(2) << camera.eye_height;
             line(text.str(), value);
         }
         {
@@ -467,7 +482,7 @@ private:
             line(text.str(), value);
         }
 
-        add_text(22.0F, 292.0F, "F1 HIDE PANEL", 2.0F, glm::vec4{0.58F, 0.70F, 0.74F, 0.95F});
+        add_text(22.0F, 342.0F, "F1 HIDE PANEL", 2.0F, glm::vec4{0.58F, 0.70F, 0.74F, 0.95F});
     }
 
     GLuint program_ = 0;
@@ -502,6 +517,8 @@ void rebuild_tiling(const RenderSettings& settings,
     center_mesh.upload(make_curved_tile_mesh(patch, settings.radial_bands, settings.edge_segments));
     grid_mesh.upload(make_grid_mesh(patch, settings.edge_segments));
     camera.frame = display_aligned_frame();
+    camera.pitch = -0.28F;
+    camera.eye_height = 0.32F;
     camera.current_tile_id = 0;
 }
 
@@ -626,6 +643,13 @@ void process_input(GLFWwindow* window, CameraState& camera, const tiling::Tiling
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
         camera.zoom = glm::max(camera.zoom - dt, 0.25F);
     }
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+        camera.eye_height = glm::min(camera.eye_height + kEyeLiftSpeed * dt, kMaxEyeHeight);
+    }
+    if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+        glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS) {
+        camera.eye_height = glm::max(camera.eye_height - kEyeLiftSpeed * dt, kMinEyeHeight);
+    }
 
     if (g_cursor_captured) {
         double mx = 0, my = 0;
@@ -643,6 +667,7 @@ void process_input(GLFWwindow* window, CameraState& camera, const tiling::Tiling
         if (dx != 0.0f || dy != 0.0f) {
             float sensitivity = 0.002f;
             float yaw = dx * sensitivity;
+            camera.pitch = glm::clamp(camera.pitch + dy * sensitivity, -1.35F, 1.20F);
             
             math::Vec3 f = camera.frame.forward;
             math::Vec3 r = camera.frame.right;
@@ -667,18 +692,18 @@ MeshData make_curved_tile_mesh(const tiling::TilingPatch& patch, int radial_band
     edge_segments = std::max(1, edge_segments);
     radial_bands = std::max(1, radial_bands);
 
+    const glm::vec3 floor_normal{0.0F, 1.0F, 0.0F};
+
     for (const tiling::Tile& tile : patch.tiles) {
         const float depth_factor = static_cast<float>(tile.depth) / 4.0F;
         const glm::vec3 color{
-            tile.depth == 0 ? 0.95F : 0.25F + 0.10F * depth_factor,
-            tile.depth == 0 ? 0.90F : 0.75F - 0.08F * depth_factor,
-            tile.depth == 0 ? 0.25F : 0.95F,
+            tile.depth == 0 ? 0.82F : 0.30F + 0.08F * depth_factor,
+            tile.depth == 0 ? 0.76F : 0.62F - 0.05F * depth_factor,
+            tile.depth == 0 ? 0.38F : 0.78F,
         };
 
         const unsigned int center_idx = static_cast<unsigned int>(mesh.vertices.size());
-        mesh.vertices.push_back(Vertex{
-            glm::vec3(tile.center.t, tile.center.x, tile.center.y), color
-        });
+        append_vertex(mesh, h2_point_to_h3(tile.center), floor_normal, color);
 
         std::vector<math::Vec3> boundary_ring;
         boundary_ring.reserve(patch.base_polygon_vertices.size() * static_cast<size_t>(edge_segments));
@@ -699,7 +724,7 @@ MeshData make_curved_tile_mesh(const tiling::TilingPatch& patch, int radial_band
             double t = static_cast<double>(band) / radial_bands;
             for (const math::Vec3& boundary_pos : boundary_ring) {
                 math::Vec3 hv = math::geodesic_lerp(tile.center, boundary_pos, t);
-                mesh.vertices.push_back(Vertex{glm::vec3(hv.t, hv.x, hv.y), color});
+                append_vertex(mesh, h2_point_to_h3(hv), floor_normal, color);
             }
         }
 
@@ -746,7 +771,7 @@ MeshData make_grid_mesh(const tiling::TilingPatch& patch, int edge_segments) {
             unsigned int base = static_cast<unsigned int>(mesh.vertices.size());
             for (int s = 0; s <= edge_segments; ++s) {
                 math::Vec3 p = math::geodesic_lerp(a, b, static_cast<double>(s) / edge_segments);
-                mesh.vertices.push_back(Vertex{glm::vec3(p.t, p.x, p.y), grid_color});
+                append_vertex(mesh, h2_point_to_h3(p), glm::vec3{0.0F, 1.0F, 0.0F}, grid_color);
                 if (s > 0) {
                     mesh.indices.push_back(base + s - 1);
                     mesh.indices.push_back(base + s);
@@ -758,6 +783,86 @@ MeshData make_grid_mesh(const tiling::TilingPatch& patch, int edge_segments) {
     return mesh;
 }
 
+glm::vec4 h2_point_to_h3(const math::Vec3& point) {
+    return glm::vec4{
+        static_cast<float>(point.y),
+        0.0F,
+        static_cast<float>(point.x),
+        static_cast<float>(point.t),
+    };
+}
+
+glm::vec4 h2_tangent_to_h3(const math::Vec3& vector) {
+    return glm::vec4{
+        static_cast<float>(vector.y),
+        0.0F,
+        static_cast<float>(vector.x),
+        static_cast<float>(vector.t),
+    };
+}
+
+void append_vertex(MeshData& mesh,
+                   const glm::vec4& position,
+                   const glm::vec3& normal,
+                   const glm::vec3& color) {
+    mesh.vertices.push_back(Vertex{position, normal, color});
+}
+
+glm::mat4 h3_lorentz_boost(const glm::vec3& direction, float distance) {
+    const float length = glm::length(direction);
+    if (length <= 1.0e-6F || std::abs(distance) <= 1.0e-6F) {
+        return glm::mat4{1.0F};
+    }
+
+    const glm::vec3 n = direction / length;
+    const float c = std::cosh(distance);
+    const float s = std::sinh(distance);
+    glm::mat4 matrix{1.0F};
+
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            matrix[col][row] = (row == col ? 1.0F : 0.0F) + (c - 1.0F) * n[row] * n[col];
+        }
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        matrix[3][i] = s * n[i];
+        matrix[i][3] = s * n[i];
+    }
+    matrix[3][3] = c;
+    return matrix;
+}
+
+glm::mat4 h3_rotation_yz(float angle) {
+    const float c = std::cos(angle);
+    const float s = std::sin(angle);
+    glm::mat4 matrix{1.0F};
+    matrix[1][1] = c;
+    matrix[2][1] = -s;
+    matrix[1][2] = s;
+    matrix[2][2] = c;
+    return matrix;
+}
+
+glm::mat4 h3_lorentz_inverse(const glm::mat4& matrix) {
+    glm::mat4 transposed = glm::transpose(matrix);
+    glm::mat4 inverse = transposed;
+    for (int i = 0; i < 3; ++i) {
+        inverse[3][i] = -transposed[3][i];
+        inverse[i][3] = -transposed[i][3];
+    }
+    return inverse;
+}
+
+glm::mat4 h3_frame_from_h2_frame(const math::CameraFrame& frame) {
+    glm::mat4 matrix{1.0F};
+    matrix[0] = h2_tangent_to_h3(frame.right);
+    matrix[1] = glm::vec4{0.0F, 1.0F, 0.0F, 0.0F};
+    matrix[2] = h2_tangent_to_h3(frame.forward);
+    matrix[3] = h2_point_to_h3(frame.position);
+    return matrix;
+}
+
 math::CameraFrame global_camera_frame(const CameraState& camera, const tiling::TilingPatch& patch) {
     const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(camera.current_tile_id)];
     return tiling::global_frame_from_tile(camera.frame, tile);
@@ -765,23 +870,18 @@ math::CameraFrame global_camera_frame(const CameraState& camera, const tiling::T
 
 glm::mat4 euclidean_projection(int width, int height, float zoom) {
     const float aspect = height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0F;
-    // We are viewing a 2D Poincare disk placed at z = 0, so use orthographic projection
-    // that bounds [-aspect*zoom, aspect*zoom] horizontally and [-zoom, zoom] vertically.
-    return glm::ortho(-aspect * zoom, aspect * zoom, -zoom, zoom, -1.0F, 1.0F);
+    const float clamped_zoom = glm::clamp(zoom, 0.25F, 3.0F);
+    const float fov_degrees = glm::clamp(74.0F / clamped_zoom, 34.0F, 100.0F);
+    return glm::perspective(glm::radians(fov_degrees), aspect, 0.01F, 8.0F);
 }
 
-glm::mat3 lorentz_view(const CameraState& camera, const tiling::TilingPatch& patch) {
-    math::CameraFrame global_frame = global_camera_frame(camera, patch);
-    math::Mat3 cam_isometry = math::frame_to_isometry(global_frame);
-    math::Mat3 inv_isometry = math::inverse_isometry(cam_isometry);
-    
-    glm::mat3 view(1.0f);
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            view[j][i] = static_cast<float>(inv_isometry.m[i][j]);
-        }
-    }
-    return view;
+glm::mat4 lorentz_view(const CameraState& camera, const tiling::TilingPatch& patch) {
+    const math::CameraFrame global_frame = global_camera_frame(camera, patch);
+    const glm::mat4 floor_frame = h3_frame_from_h2_frame(global_frame);
+    const glm::mat4 eye_frame =
+        floor_frame * h3_lorentz_boost(glm::vec3{0.0F, 1.0F, 0.0F}, camera.eye_height) *
+        h3_rotation_yz(camera.pitch);
+    return h3_lorentz_inverse(eye_frame);
 }
 
 void update_window_title(GLFWwindow* window, const CameraState& camera, const tiling::TilingPatch& patch) {
@@ -797,6 +897,7 @@ void update_window_title(GLFWwindow* window, const CameraState& camera, const ti
           << " | d(origin) " << origin_distance
           << " | speed " << camera.move_speed
           << " | zoom " << camera.zoom
+          << " | height " << camera.eye_height
           << " | tiles " << patch.tiles.size();
     glfwSetWindowTitle(window, title.str().c_str());
 }
@@ -879,10 +980,13 @@ void App::run() {
         shader.use();
         shader.set_mat4("uEuclideanProj", euclidean_projection(width, height, camera.zoom));
         
-        glm::mat3 lv = lorentz_view(camera, patch);
-        glUniformMatrix3fv(glGetUniformLocation(shader.id(), "uLorentzView"), 1, GL_FALSE, &lv[0][0]);
+        glm::mat4 lv = lorentz_view(camera, patch);
+        glUniformMatrix4fv(glGetUniformLocation(shader.id(), "uLorentzView"), 1, GL_FALSE, &lv[0][0]);
+        glUniform1i(glGetUniformLocation(shader.id(), "uProjectionModel"), 1);
         glUniform1f(glGetUniformLocation(shader.id(), "uFogDensity"), settings.fog_density);
         glUniform3fv(glGetUniformLocation(shader.id(), "uFogColor"), 1, &settings.fog_color[0]);
+        const glm::vec3 light_dir = glm::normalize(glm::vec3{0.85F, 1.20F, 0.45F});
+        glUniform3fv(glGetUniformLocation(shader.id(), "uLightDir"), 1, &light_dir[0]);
 
         glPolygonMode(GL_FRONT_AND_BACK, settings.show_wireframe ? GL_LINE : GL_FILL);
         

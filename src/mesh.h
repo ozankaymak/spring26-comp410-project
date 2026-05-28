@@ -8,7 +8,9 @@
 namespace hyper {
 
 struct Vertex {
-    glm::vec3 position{};
+    // Hyperboloid point in H3 using (x, y, z, w), with metric +++-.
+    glm::vec4 position{};
+    glm::vec3 normal{};
     glm::vec3 color{};
 };
 
