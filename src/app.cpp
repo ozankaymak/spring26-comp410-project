@@ -4,6 +4,7 @@
 #include "mesh.h"
 #include "shader.h"
 #include "tiling_core.h"
+#include "tiling_minimap.h"
 
 #include <chrono>
 #include <filesystem>
@@ -97,6 +98,42 @@ void process_input(GLFWwindow* window, CameraState& camera, const tiling::Tiling
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
         camera.zoom = glm::max(camera.zoom - dt, 0.25F);
     }
+}
+
+MeshData make_minimap_point_mesh(const std::vector<glm::vec2>& points, float marker_radius = 0.015F) {
+    MeshData mesh;
+    const glm::vec3 color{0.9F, 0.85F, 0.3F};
+    for (const glm::vec2& pt : points) {
+        const glm::vec3 c{pt.x, pt.y, 0.0F};
+        const unsigned int base = static_cast<unsigned int>(mesh.vertices.size());
+        mesh.vertices.push_back(Vertex{c + glm::vec3{-marker_radius, -marker_radius, 0.0F}, color});
+        mesh.vertices.push_back(Vertex{c + glm::vec3{ marker_radius, -marker_radius, 0.0F}, color});
+        mesh.vertices.push_back(Vertex{c + glm::vec3{ marker_radius,  marker_radius, 0.0F}, color});
+        mesh.vertices.push_back(Vertex{c + glm::vec3{-marker_radius,  marker_radius, 0.0F}, color});
+        mesh.indices.push_back(base + 0U);
+        mesh.indices.push_back(base + 1U);
+        mesh.indices.push_back(base + 2U);
+        mesh.indices.push_back(base + 0U);
+        mesh.indices.push_back(base + 2U);
+        mesh.indices.push_back(base + 3U);
+    }
+    return mesh;
+}
+
+MeshData make_minimap_edge_mesh(const std::vector<tiling::MinimapPolyline>& polylines) {
+    MeshData mesh;
+    const glm::vec3 color{0.55F, 0.75F, 0.95F};
+    for (const tiling::MinimapPolyline& pl : polylines) {
+        if (pl.size() < 2) continue;
+        for (std::size_t i = 0; i + 1 < pl.size(); ++i) {
+            const unsigned int base = static_cast<unsigned int>(mesh.vertices.size());
+            mesh.vertices.push_back(Vertex{glm::vec3{pl[i].x,     pl[i].y,     0.0F}, color});
+            mesh.vertices.push_back(Vertex{glm::vec3{pl[i+1].x,   pl[i+1].y,   0.0F}, color});
+            mesh.indices.push_back(base);
+            mesh.indices.push_back(base + 1U);
+        }
+    }
+    return mesh;
 }
 
 MeshData make_tile_center_mesh(const tiling::TilingPatch& patch) {
@@ -215,6 +252,12 @@ void App::run() {
     Mesh grid_mesh;
     grid_mesh.upload(make_grid_mesh(patch));
 
+    // Minimap meshes — rebuilt each frame from collected data.
+    Mesh minimap_point_mesh;
+    Mesh minimap_edge_mesh;
+    std::vector<glm::vec2> minimap_points;
+    std::vector<tiling::MinimapPolyline> minimap_edges;
+
     CameraState camera;
     auto previous_time = std::chrono::steady_clock::now();
 
@@ -228,19 +271,45 @@ void App::run() {
 
         glfwGetFramebufferSize(window, &width, &height);
 
+        // Rebuild minimap data from the camera's current position.
+        {
+            const math::Mat3 minimap_view = math::inverse_isometry(math::frame_to_isometry(camera.frame));
+            tiling::collect_minimap(patch, camera.frame.position, 3.0,
+                                    minimap_view, minimap_points, minimap_edges);
+            minimap_point_mesh.upload(make_minimap_point_mesh(minimap_points));
+            minimap_edge_mesh.upload(make_minimap_edge_mesh(minimap_edges));
+        }
+
         glClearColor(0.08F, 0.10F, 0.09F, 1.0F);
         glClear(GL_COLOR_BUFFER_BIT);
 
+        // --- Main view ---
+        glViewport(0, 0, width, height);
         shader.use();
         shader.set_mat4("u_mvp", camera_matrix(camera, width, height));
 
-        // Draw grid
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         grid_mesh.draw();
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-        // Draw centers
         center_mesh.draw();
+
+        // --- Minimap overlay (bottom-left corner) ---
+        const int mm_size = std::min(width, height) / 4;
+        const int mm_x = 10;
+        const int mm_y = 10;
+        glViewport(mm_x, mm_y, mm_size, mm_size);
+        // Simple orthographic: map [-1,1] disk to the minimap viewport.
+        const glm::mat4 mm_mvp = glm::ortho(-1.0F, 1.0F, -1.0F, 1.0F, -1.0F, 1.0F);
+        shader.use();
+        shader.set_mat4("u_mvp", mm_mvp);
+
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        minimap_edge_mesh.draw();
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        minimap_point_mesh.draw();
+
+        glViewport(0, 0, width, height);
 
         // // ImGui HUD
         // ImGui_ImplOpenGL3_NewFrame();
