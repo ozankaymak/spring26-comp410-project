@@ -4,6 +4,7 @@
 #include "mesh.h"
 #include "shader.h"
 #include "tiling_core.h"
+#include "tiling_minimap.h"
 
 #include <chrono>
 #include <array>
@@ -53,6 +54,11 @@ struct RenderSettings {
     bool show_grid = true;
     bool show_wireframe = false;
     bool show_debug_ui = true;
+    bool show_minimap = true;
+    float minimap_radius = 4.5F;
+    int minimap_max_points = 1200;
+    int minimap_max_edges = 3000;
+    int minimap_edge_segments = 8;
     float fog_density = 0.50F;
     glm::vec3 fog_color{0.07F, 0.085F, 0.095F};
     int edge_segments = 8;
@@ -95,6 +101,7 @@ struct DebugInputState {
     bool v_down = false;
     bool b_down = false;
     bool n_down = false;
+    bool m_down = false;
 };
 
 struct OverlayVertex {
@@ -116,6 +123,56 @@ void append_vertex(MeshData& mesh,
                    const glm::vec3& color);
 MeshData make_curved_tile_mesh(const tiling::TilingPatch& patch, int radial_bands, int edge_segments);
 MeshData make_grid_mesh(const tiling::TilingPatch& patch, int edge_segments);
+
+glm::vec2 clamp_to_disk(const glm::vec2& p) {
+    constexpr float kClipRadius = 0.9995F;
+    const float r2 = glm::dot(p, p);
+    if (r2 <= kClipRadius * kClipRadius || r2 <= 0.0F) {
+        return p;
+    }
+
+    return p * (kClipRadius / std::sqrt(r2));
+}
+
+bool clip_segment_to_unit_disk(const glm::vec2& a,
+                               const glm::vec2& b,
+                               glm::vec2& out_a,
+                               glm::vec2& out_b) {
+    const glm::vec2 d = b - a;
+    const float aa = glm::dot(d, d);
+    if (aa < 1.0e-12F) {
+        if (glm::dot(a, a) > 1.0F) {
+            return false;
+        }
+        out_a = clamp_to_disk(a);
+        out_b = clamp_to_disk(b);
+        return true;
+    }
+
+    const float bb = 2.0F * glm::dot(a, d);
+    const float cc = glm::dot(a, a) - 1.0F;
+    const float discriminant = bb * bb - 4.0F * aa * cc;
+    if (discriminant < 0.0F) {
+        return false;
+    }
+
+    const float root = std::sqrt(std::max(discriminant, 0.0F));
+    float t0 = (-bb - root) / (2.0F * aa);
+    float t1 = (-bb + root) / (2.0F * aa);
+    if (t0 > t1) {
+        std::swap(t0, t1);
+    }
+
+    const float enter = std::max(0.0F, t0);
+    const float exit = std::min(1.0F, t1);
+    if (enter > exit) {
+        return false;
+    }
+
+    out_a = clamp_to_disk(a + d * enter);
+    out_b = clamp_to_disk(a + d * exit);
+    return true;
+}
 
 constexpr std::array<TilingPreset, 4> kTilingPresets{{
     TilingPreset{GLFW_KEY_1, math::RegularTilingParameters{4, 6}, "1 {4,6} 6 SQUARES"},
@@ -329,6 +386,9 @@ void main() {
             add_rect(10.0F, 10.0F, 138.0F, 24.0F, glm::vec4{0.02F, 0.03F, 0.04F, 0.72F});
             add_text(18.0F, 18.0F, "F1 DEBUG UI", 2.0F, glm::vec4{0.88F, 0.94F, 1.00F, 0.92F});
         }
+        if (settings.show_minimap) {
+            add_minimap(static_cast<float>(width), static_cast<float>(height), settings, camera, patch);
+        }
 
         if (vertices_.empty()) {
             return;
@@ -368,6 +428,69 @@ private:
         vertices_.push_back(d);
     }
 
+    void add_triangle(const glm::vec2& a,
+                      const glm::vec2& b,
+                      const glm::vec2& c,
+                      const glm::vec4& color) {
+        vertices_.push_back(OverlayVertex{a, color});
+        vertices_.push_back(OverlayVertex{b, color});
+        vertices_.push_back(OverlayVertex{c, color});
+    }
+
+    void add_line_segment(const glm::vec2& a,
+                          const glm::vec2& b,
+                          float thickness,
+                          const glm::vec4& color) {
+        const glm::vec2 d = b - a;
+        const float len2 = glm::dot(d, d);
+        if (len2 <= 1.0e-6F) {
+            return;
+        }
+
+        const glm::vec2 unit = d / std::sqrt(len2);
+        const glm::vec2 normal{-unit.y, unit.x};
+        const glm::vec2 offset = normal * (0.5F * thickness);
+        const glm::vec2 p0 = a + offset;
+        const glm::vec2 p1 = b + offset;
+        const glm::vec2 p2 = b - offset;
+        const glm::vec2 p3 = a - offset;
+        add_triangle(p0, p1, p2, color);
+        add_triangle(p0, p2, p3, color);
+    }
+
+    void add_circle_filled(const glm::vec2& center,
+                           float radius,
+                           int segments,
+                           const glm::vec4& color) {
+        const int count = std::max(8, segments);
+        constexpr float kTwoPi = 6.28318530717958647692F;
+        for (int i = 0; i < count; ++i) {
+            const float a0 = kTwoPi * static_cast<float>(i) / static_cast<float>(count);
+            const float a1 = kTwoPi * static_cast<float>(i + 1) / static_cast<float>(count);
+            add_triangle(center,
+                         center + radius * glm::vec2{std::cos(a0), std::sin(a0)},
+                         center + radius * glm::vec2{std::cos(a1), std::sin(a1)},
+                         color);
+        }
+    }
+
+    void add_circle_outline(const glm::vec2& center,
+                            float radius,
+                            int segments,
+                            float thickness,
+                            const glm::vec4& color) {
+        const int count = std::max(8, segments);
+        constexpr float kTwoPi = 6.28318530717958647692F;
+        for (int i = 0; i < count; ++i) {
+            const float a0 = kTwoPi * static_cast<float>(i) / static_cast<float>(count);
+            const float a1 = kTwoPi * static_cast<float>(i + 1) / static_cast<float>(count);
+            add_line_segment(center + radius * glm::vec2{std::cos(a0), std::sin(a0)},
+                             center + radius * glm::vec2{std::cos(a1), std::sin(a1)},
+                             thickness,
+                             color);
+        }
+    }
+
     void add_text(float x, float y, const std::string& text, float scale, const glm::vec4& color) {
         float cursor_x = x;
         for (char ch : text) {
@@ -400,6 +523,73 @@ private:
         const float cy = height * 0.5F;
         add_rect(cx - 9.0F, cy - 1.0F, 18.0F, 2.0F, color);
         add_rect(cx - 1.0F, cy - 9.0F, 2.0F, 18.0F, color);
+    }
+
+    void add_minimap(float width,
+                     float height,
+                     const RenderSettings& settings,
+                     const CameraState& camera,
+                     const tiling::TilingPatch& patch) {
+        if (patch.tiles.empty() || width <= 0.0F || height <= 0.0F) {
+            return;
+        }
+
+        const math::CameraFrame global_frame = global_camera_frame(camera, patch);
+        const math::Mat3 minimap_view = math::inverse_isometry(math::frame_to_isometry(global_frame));
+        tiling::collect_minimap(patch,
+                                global_frame.position,
+                                static_cast<double>(settings.minimap_radius),
+                                minimap_view,
+                                minimap_points_,
+                                minimap_edges_,
+                                settings.minimap_max_points,
+                                settings.minimap_max_edges,
+                                settings.minimap_edge_segments);
+
+        const float side = glm::clamp(std::min(width, height) * 0.26F, 118.0F, 176.0F);
+        const float margin = 16.0F;
+        const glm::vec2 center{margin + side * 0.5F, height - margin - side * 0.5F};
+        const float radius = side * 0.5F;
+        const float scale = radius * 0.92F;
+        const glm::vec4 bg{0.02F, 0.035F, 0.035F, 0.76F};
+        const glm::vec4 rim{0.82F, 0.92F, 0.96F, 0.36F};
+        const glm::vec4 edge{0.68F, 0.82F, 0.90F, 0.43F};
+        const glm::vec4 dot{0.32F, 0.72F, 0.96F, 0.80F};
+        const glm::vec4 camera_color{0.98F, 0.92F, 0.18F, 0.96F};
+
+        add_circle_filled(center, radius, 48, bg);
+        add_circle_outline(center, radius, 72, 1.5F, rim);
+
+        auto map_point = [&](const glm::vec2& p) {
+            return glm::vec2{center.x + p.x * scale, center.y - p.y * scale};
+        };
+
+        for (const tiling::MinimapPolyline& polyline : minimap_edges_) {
+            if (polyline.size() < 2) {
+                continue;
+            }
+            for (std::size_t i = 0; i + 1 < polyline.size(); ++i) {
+                glm::vec2 a{};
+                glm::vec2 b{};
+                if (clip_segment_to_unit_disk(polyline[i], polyline[i + 1], a, b)) {
+                    add_line_segment(map_point(a), map_point(b), 1.1F, edge);
+                }
+            }
+        }
+
+        for (const glm::vec2& p : minimap_points_) {
+            if (glm::dot(p, p) >= 1.0F) {
+                continue;
+            }
+            const glm::vec2 screen = map_point(p);
+            add_rect(screen.x - 1.5F, screen.y - 1.5F, 3.0F, 3.0F, dot);
+        }
+
+        add_rect(center.x - 3.0F, center.y - 3.0F, 6.0F, 6.0F, camera_color);
+        add_line_segment(center,
+                         map_point(glm::vec2{0.12F, 0.0F}),
+                         2.0F,
+                         camera_color);
     }
 
     void add_panel(const RenderSettings& settings,
@@ -468,6 +658,7 @@ private:
 
         line(std::string{"G GRID "} + (settings.show_grid ? "ON" : "OFF"), label);
         line(std::string{"F WIREFRAME "} + (settings.show_wireframe ? "ON" : "OFF"), label);
+        line(std::string{"M MINIMAP "} + (settings.show_minimap ? "ON" : "OFF"), label);
         line(std::string{"ESC CURSOR "} + (g_cursor_captured ? "CAPTURED" : "FREE"), label);
 
         {
@@ -488,6 +679,8 @@ private:
     GLuint program_ = 0;
     GLuint vao_ = 0;
     GLuint vbo_ = 0;
+    std::vector<glm::vec2> minimap_points_;
+    std::vector<tiling::MinimapPolyline> minimap_edges_;
     std::vector<OverlayVertex> vertices_;
 };
 
@@ -564,6 +757,9 @@ bool process_debug_input(GLFWwindow* window,
     }
     if (consume_key_press(window, GLFW_KEY_F, input.f_down)) {
         settings.show_wireframe = !settings.show_wireframe;
+    }
+    if (consume_key_press(window, GLFW_KEY_M, input.m_down)) {
+        settings.show_minimap = !settings.show_minimap;
     }
     if (consume_key_press(window, GLFW_KEY_Z, input.z_down)) {
         settings.fog_density = glm::max(0.0F, settings.fog_density - 0.05F);

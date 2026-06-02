@@ -1,5 +1,6 @@
 #include "test_support.h"
 #include "tiling_core.h"
+#include "tiling_minimap.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -65,6 +66,41 @@ void test_neighbor_centers_are_one_tile_step_away() {
         require_close(hyper::math::intrinsic_distance(root.center, neighbor.center), 2.0 * metrics.inradius,
                       "neighbor center is across one tile side");
     }
+}
+
+void test_minimap_collects_tile_boundary_edges() {
+    const hyper::tiling::TilingPatch patch =
+        hyper::tiling::generate_tiling_patch(hyper::math::RegularTilingParameters{4, 6}, 0);
+
+    std::vector<glm::vec2> points;
+    std::vector<hyper::tiling::MinimapPolyline> edges;
+    hyper::tiling::collect_minimap(patch,
+                                   hyper::math::origin(),
+                                   0.1,
+                                   hyper::math::identity_isometry(),
+                                   points,
+                                   edges,
+                                   10,
+                                   10,
+                                   8);
+
+    require(points.size() == 1, "depth-zero minimap collects the root tile center");
+
+    int edge_count = 0;
+    for (const hyper::tiling::MinimapPolyline& edge : edges) {
+        if (edge.empty()) {
+            continue;
+        }
+
+        require(edge.size() >= 2, "minimap edge contains a drawable polyline");
+        for (const glm::vec2& point : edge) {
+            require(point.x * point.x + point.y * point.y < 1.0F,
+                    "minimap edge point stays inside the Poincare disk");
+        }
+        ++edge_count;
+    }
+
+    require(edge_count == 4, "depth-zero square minimap has four tile boundary edges");
 }
 
 int count_tiles_at_root_vertex(hyper::math::RegularTilingParameters parameters, int depth) {
@@ -158,6 +194,7 @@ int main() {
         test_base_polygon_vertices();
         test_patch_depth_and_centers();
         test_neighbor_centers_are_one_tile_step_away();
+        test_minimap_collects_tile_boundary_edges();
         test_corner_tile_count_matches_q();
         test_patch_rejects_invalid_inputs();
         test_find_current_tile_and_rebasing();

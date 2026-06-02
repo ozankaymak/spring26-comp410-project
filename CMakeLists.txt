@@ -41,9 +41,10 @@ target_link_libraries(hyperbolica_math PUBLIC project_warnings)
 
 add_library(hyperbolica_tiling
     src/tiling_core.cpp
+    src/tiling_minimap.cpp
 )
 target_include_directories(hyperbolica_tiling PUBLIC src)
-target_link_libraries(hyperbolica_tiling PUBLIC hyperbolica_math project_warnings)
+target_link_libraries(hyperbolica_tiling PUBLIC hyperbolica_math PkgConfig::GLM project_warnings)
 
 add_library(hyperbolica_render
     src/shader.cpp
