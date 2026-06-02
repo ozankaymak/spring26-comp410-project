@@ -14,14 +14,14 @@ constexpr double kPi = 3.14159265358979323846;
 
 // Apply the minimap view isometry then project to the Poincaré disk.
 glm::dvec2 project_to_minimap(const math::Vec3& world_pos, const math::Mat3& minimap_view) {
-    const math::Vec3 local = math::apply_isometry(minimap_view, world_pos);
+    const math::Vec3 local = math::hyperboloid_normalize(math::apply_isometry(minimap_view, world_pos));
     const math::Vec2 p = math::project_to_poincare_disk(local);
     return {p.x, p.y};
 }
 
 std::uint64_t vertex_key(const math::Vec3& world_pos) {
     constexpr double kQuantizeScale = 1.0e8;
-    const math::Vec2 p = math::project_to_poincare_disk(world_pos);
+    const math::Vec2 p = math::project_to_poincare_disk(math::hyperboloid_normalize(world_pos));
     const auto qx = static_cast<std::int32_t>(std::llround(p.x * kQuantizeScale));
     const auto qy = static_cast<std::int32_t>(std::llround(p.y * kQuantizeScale));
     return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(qx)) << 32U) |
@@ -107,8 +107,10 @@ void collect_minimap_edges_from_tiles(const TilingPatch& patch,
         const Tile& tile = patch.tiles[static_cast<std::size_t>(tile_idx)];
         for (std::size_t side = 0; side < patch.base_polygon_vertices.size(); ++side) {
             const std::size_t next_side = (side + 1U) % patch.base_polygon_vertices.size();
-            const math::Vec3 a = math::apply_isometry(tile.transform, patch.base_polygon_vertices[side]);
-            const math::Vec3 b = math::apply_isometry(tile.transform, patch.base_polygon_vertices[next_side]);
+            const math::Vec3 a =
+                math::hyperboloid_normalize(math::apply_isometry(tile.transform, patch.base_polygon_vertices[side]));
+            const math::Vec3 b = math::hyperboloid_normalize(
+                math::apply_isometry(tile.transform, patch.base_polygon_vertices[next_side]));
             const EdgeKey key = edge_key(a, b);
             if (seen.insert(key).second) {
                 edge_list.push_back(MinimapEdge{a, b});

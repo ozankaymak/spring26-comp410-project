@@ -3,6 +3,7 @@
 #include "tiling_minimap.h"
 
 #include <cmath>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 
@@ -103,6 +104,51 @@ void test_minimap_collects_tile_boundary_edges() {
     require(edge_count == 4, "depth-zero square minimap has four tile boundary edges");
 }
 
+void test_minimap_survives_repeated_forward_movement() {
+    const hyper::tiling::TilingPatch patch =
+        hyper::tiling::generate_tiling_patch(hyper::math::RegularTilingParameters{4, 6}, 5);
+    int current_tile = 0;
+    hyper::math::CameraFrame frame = hyper::math::orthonormalize_frame(hyper::math::CameraFrame{
+        hyper::math::origin(),
+        hyper::math::Vec3{0.0, 0.0, 1.0},
+        hyper::math::Vec3{0.0, 1.0, 0.0},
+    });
+
+    std::vector<glm::vec2> points;
+    std::vector<hyper::tiling::MinimapPolyline> edges;
+    for (int step = 0; step < 500; ++step) {
+        hyper::math::CameraFrame moved = hyper::math::move_frame(frame, hyper::math::Vec2{0.04, 0.0});
+        int moved_tile = current_tile;
+        if (hyper::tiling::rebase_frame_across_edges(patch, moved_tile, moved)) {
+            frame = moved;
+            current_tile = moved_tile;
+        }
+
+        const hyper::math::CameraFrame global_frame =
+            hyper::tiling::global_frame_from_tile(frame, patch.tiles[static_cast<std::size_t>(current_tile)]);
+        const hyper::math::Mat3 minimap_view =
+            hyper::math::inverse_isometry(hyper::math::frame_to_isometry(global_frame));
+        try {
+            hyper::tiling::collect_minimap(patch,
+                                           global_frame.position,
+                                           4.5,
+                                           minimap_view,
+                                           points,
+                                           edges,
+                                           1200,
+                                           3000,
+                                           8);
+        } catch (const std::exception& error) {
+            std::cerr << "minimap failed at step " << step
+                      << " tile " << current_tile
+                      << " local_norm " << hyper::math::minkowski_norm_squared(frame.position)
+                      << " global_norm " << hyper::math::minkowski_norm_squared(global_frame.position)
+                      << ": " << error.what() << '\n';
+            throw;
+        }
+    }
+}
+
 int count_tiles_at_root_vertex(hyper::math::RegularTilingParameters parameters, int depth) {
     const hyper::tiling::TilingPatch patch = hyper::tiling::generate_tiling_patch(parameters, depth);
     const hyper::math::Vec3 target = patch.base_polygon_vertices[0];
@@ -195,6 +241,7 @@ int main() {
         test_patch_depth_and_centers();
         test_neighbor_centers_are_one_tile_step_away();
         test_minimap_collects_tile_boundary_edges();
+        test_minimap_survives_repeated_forward_movement();
         test_corner_tile_count_matches_q();
         test_patch_rejects_invalid_inputs();
         test_find_current_tile_and_rebasing();
