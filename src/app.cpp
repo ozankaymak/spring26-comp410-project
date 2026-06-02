@@ -535,13 +535,18 @@ private:
 
     static constexpr float kMinimapStackGap = 12.0F;
     static constexpr float kMinimapMargin = 16.0F;
+    static constexpr float kMinimapViewportScale = 0.26F;
+    static constexpr float kMinimapMinSize = 132.0F;
+    static constexpr float kMinimapMaxSize = 214.0F;
 
     static bool contains_point(const glm::vec2& min, const glm::vec2& max, const glm::vec2& point) {
         return point.x >= min.x && point.x <= max.x && point.y >= min.y && point.y <= max.y;
     }
 
     static void clamp_minimap_window_size(MinimapWindow& window, float height) {
-        window.size = glm::clamp(window.size, 96.0F, std::min(320.0F, std::max(96.0F, height - 64.0F)));
+        const float max_stacked_size = std::max(96.0F, (height - kMinimapStackGap) * 0.5F - 38.0F);
+        const float max_size = std::min(kMinimapMaxSize, max_stacked_size);
+        window.size = glm::clamp(window.size, std::min(kMinimapMinSize, max_size), max_size);
     }
 
     void sync_minimap_stack(float width, float height) {
@@ -567,7 +572,9 @@ private:
             return;
         }
 
-        const float side = glm::clamp(std::min(width, height) * 0.24F, 132.0F, 190.0F);
+        const float side = glm::clamp(std::min(width, height) * kMinimapViewportScale,
+                                      kMinimapMinSize,
+                                      kMinimapMaxSize);
         static_window_.size = side;
         dynamic_window_.size = side;
 
