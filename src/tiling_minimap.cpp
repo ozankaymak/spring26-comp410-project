@@ -1,10 +1,7 @@
 #include "tiling_minimap.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
-#include <cstdint>
-#include <unordered_set>
 
 namespace hyper::tiling {
 
@@ -17,36 +14,6 @@ glm::dvec2 project_to_minimap(const math::Vec3& world_pos, const math::Mat3& min
     const math::Vec3 local = math::hyperboloid_normalize(math::apply_isometry(minimap_view, world_pos));
     const math::Vec2 p = math::project_to_poincare_disk(local);
     return {p.x, p.y};
-}
-
-std::uint64_t vertex_key(const math::Vec3& world_pos) {
-    constexpr double kQuantizeScale = 1.0e8;
-    const math::Vec2 p = math::project_to_poincare_disk(math::hyperboloid_normalize(world_pos));
-    const auto qx = static_cast<std::int32_t>(std::llround(p.x * kQuantizeScale));
-    const auto qy = static_cast<std::int32_t>(std::llround(p.y * kQuantizeScale));
-    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(qx)) << 32U) |
-           static_cast<std::uint32_t>(qy);
-}
-
-struct EdgeKey {
-    std::uint64_t a = 0;
-    std::uint64_t b = 0;
-
-    bool operator==(const EdgeKey& other) const {
-        return a == other.a && b == other.b;
-    }
-};
-
-struct EdgeKeyHash {
-    std::size_t operator()(const EdgeKey& key) const {
-        return static_cast<std::size_t>(key.a ^ (key.b + 0x9e3779b97f4a7c15ULL + (key.a << 6U) + (key.a >> 2U)));
-    }
-};
-
-EdgeKey edge_key(const math::Vec3& a, const math::Vec3& b) {
-    const std::uint64_t key_a = vertex_key(a);
-    const std::uint64_t key_b = vertex_key(b);
-    return key_a < key_b ? EdgeKey{key_a, key_b} : EdgeKey{key_b, key_a};
 }
 
 struct MinimapEdge {
@@ -96,7 +63,13 @@ void collect_minimap_edges_from_tiles(const TilingPatch& patch,
         return;
     }
 
-    std::unordered_set<EdgeKey, EdgeKeyHash> seen;
+    std::vector<bool> selected(patch.tiles.size(), false);
+    for (int tile_idx : tile_indices) {
+        if (tile_idx >= 0 && tile_idx < static_cast<int>(patch.tiles.size())) {
+            selected[static_cast<std::size_t>(tile_idx)] = true;
+        }
+    }
+
     std::vector<MinimapEdge> edge_list;
     edge_list.reserve(static_cast<std::size_t>(max_edges));
 
@@ -106,18 +79,24 @@ void collect_minimap_edges_from_tiles(const TilingPatch& patch,
         if (tile_idx < 0 || tile_idx >= static_cast<int>(patch.tiles.size())) continue;
         const Tile& tile = patch.tiles[static_cast<std::size_t>(tile_idx)];
         for (std::size_t side = 0; side < patch.base_polygon_vertices.size(); ++side) {
+            const int neighbor =
+                side < tile.neighbors.size() ? tile.neighbors[side] : -1;
+            if (neighbor >= 0 &&
+                neighbor < static_cast<int>(selected.size()) &&
+                selected[static_cast<std::size_t>(neighbor)] &&
+                neighbor < tile_idx) {
+                continue;
+            }
+
             const std::size_t next_side = (side + 1U) % patch.base_polygon_vertices.size();
             const math::Vec3 a =
                 math::hyperboloid_normalize(math::apply_isometry(tile.transform, patch.base_polygon_vertices[side]));
             const math::Vec3 b = math::hyperboloid_normalize(
                 math::apply_isometry(tile.transform, patch.base_polygon_vertices[next_side]));
-            const EdgeKey key = edge_key(a, b);
-            if (seen.insert(key).second) {
-                edge_list.push_back(MinimapEdge{a, b});
-                if (static_cast<int>(edge_list.size()) >= max_edges) {
-                    limit_hit = true;
-                    break;
-                }
+            edge_list.push_back(MinimapEdge{a, b});
+            if (static_cast<int>(edge_list.size()) >= max_edges) {
+                limit_hit = true;
+                break;
             }
         }
     }

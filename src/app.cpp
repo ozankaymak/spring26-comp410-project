@@ -174,6 +174,27 @@ bool clip_segment_to_unit_disk(const glm::vec2& a,
     return true;
 }
 
+glm::vec2 project_minimap_point(const math::Vec3& world_pos, const math::Mat3& minimap_view) {
+    const math::Vec3 local = math::hyperboloid_normalize(math::apply_isometry(minimap_view, world_pos));
+    const math::Vec2 projected = math::project_to_poincare_disk(local);
+    return clamp_to_disk(glm::vec2{static_cast<float>(projected.x), static_cast<float>(projected.y)});
+}
+
+math::Vec3 frame_offset_point(const math::CameraFrame& frame, double forward_distance) {
+    const math::Vec3 local_offset =
+        math::apply_isometry(math::lorentz_boost(math::Vec2{forward_distance, 0.0}), math::origin());
+    return math::hyperboloid_normalize(math::apply_isometry(math::frame_to_isometry(frame), local_offset));
+}
+
+double generated_map_radius(const tiling::TilingPatch& patch) {
+    double radius = 0.0;
+    const math::Vec3 origin = math::origin();
+    for (const tiling::Tile& tile : patch.tiles) {
+        radius = std::max(radius, math::intrinsic_distance(origin, tile.center));
+    }
+    return radius + 1.0e-6;
+}
+
 constexpr std::array<TilingPreset, 4> kTilingPresets{{
     TilingPreset{GLFW_KEY_1, math::RegularTilingParameters{4, 6}, "1 {4,6} 6 SQUARES"},
     TilingPreset{GLFW_KEY_2, math::RegularTilingParameters{3, 7}, "2 {3,7} 7 TRIANGLES"},
@@ -525,46 +546,63 @@ private:
         add_rect(cx - 1.0F, cy - 9.0F, 2.0F, 18.0F, color);
     }
 
-    void add_minimap(float width,
-                     float height,
-                     const RenderSettings& settings,
-                     const CameraState& camera,
-                     const tiling::TilingPatch& patch) {
-        if (patch.tiles.empty() || width <= 0.0F || height <= 0.0F) {
+    void ensure_static_minimap_cache(const RenderSettings& settings, const tiling::TilingPatch& patch) {
+        if (static_minimap_cache_valid_ &&
+            static_minimap_parameters_.p == settings.tiling_parameters.p &&
+            static_minimap_parameters_.q == settings.tiling_parameters.q &&
+            static_minimap_depth_ == settings.tiling_depth &&
+            static_minimap_tile_count_ == patch.tiles.size() &&
+            static_minimap_max_points_ == settings.minimap_max_points &&
+            static_minimap_max_edges_ == settings.minimap_max_edges &&
+            static_minimap_edge_segments_ == settings.minimap_edge_segments) {
             return;
         }
 
-        const math::CameraFrame global_frame = global_camera_frame(camera, patch);
-        const math::Mat3 minimap_view = math::inverse_isometry(math::frame_to_isometry(global_frame));
         tiling::collect_minimap(patch,
-                                global_frame.position,
-                                static_cast<double>(settings.minimap_radius),
-                                minimap_view,
-                                minimap_points_,
-                                minimap_edges_,
+                                math::origin(),
+                                generated_map_radius(patch),
+                                math::identity_isometry(),
+                                static_minimap_points_,
+                                static_minimap_edges_,
                                 settings.minimap_max_points,
                                 settings.minimap_max_edges,
                                 settings.minimap_edge_segments);
 
-        const float side = glm::clamp(std::min(width, height) * 0.26F, 118.0F, 176.0F);
-        const float margin = 16.0F;
-        const glm::vec2 center{margin + side * 0.5F, height - margin - side * 0.5F};
-        const float radius = side * 0.5F;
-        const float scale = radius * 0.92F;
+        static_minimap_parameters_ = settings.tiling_parameters;
+        static_minimap_depth_ = settings.tiling_depth;
+        static_minimap_tile_count_ = patch.tiles.size();
+        static_minimap_max_points_ = settings.minimap_max_points;
+        static_minimap_max_edges_ = settings.minimap_max_edges;
+        static_minimap_edge_segments_ = settings.minimap_edge_segments;
+        static_minimap_cache_valid_ = true;
+    }
+
+    void add_minimap_view(const glm::vec2& center,
+                          float radius,
+                          const std::vector<glm::vec2>& points,
+                          const std::vector<tiling::MinimapPolyline>& edges,
+                          const glm::vec2& origin_marker,
+                          const glm::vec2& camera_marker,
+                          const glm::vec2& forward_marker,
+                          const std::string& label) {
+        const float scale = radius * 0.90F;
         const glm::vec4 bg{0.02F, 0.035F, 0.035F, 0.76F};
         const glm::vec4 rim{0.82F, 0.92F, 0.96F, 0.36F};
         const glm::vec4 edge{0.68F, 0.82F, 0.90F, 0.43F};
         const glm::vec4 dot{0.32F, 0.72F, 0.96F, 0.80F};
         const glm::vec4 camera_color{0.98F, 0.92F, 0.18F, 0.96F};
+        const glm::vec4 origin_color{0.90F, 0.96F, 1.0F, 0.52F};
+        const glm::vec4 label_color{0.86F, 0.93F, 0.96F, 0.80F};
 
         add_circle_filled(center, radius, 48, bg);
         add_circle_outline(center, radius, 72, 1.5F, rim);
+        add_text(center.x - 24.0F, center.y - radius + 8.0F, label, 1.25F, label_color);
 
         auto map_point = [&](const glm::vec2& p) {
             return glm::vec2{center.x + p.x * scale, center.y - p.y * scale};
         };
 
-        for (const tiling::MinimapPolyline& polyline : minimap_edges_) {
+        for (const tiling::MinimapPolyline& polyline : edges) {
             if (polyline.size() < 2) {
                 continue;
             }
@@ -577,7 +615,7 @@ private:
             }
         }
 
-        for (const glm::vec2& p : minimap_points_) {
+        for (const glm::vec2& p : points) {
             if (glm::dot(p, p) >= 1.0F) {
                 continue;
             }
@@ -585,11 +623,77 @@ private:
             add_rect(screen.x - 1.5F, screen.y - 1.5F, 3.0F, 3.0F, dot);
         }
 
-        add_rect(center.x - 3.0F, center.y - 3.0F, 6.0F, 6.0F, camera_color);
-        add_line_segment(center,
-                         map_point(glm::vec2{0.12F, 0.0F}),
-                         2.0F,
-                         camera_color);
+        if (glm::dot(origin_marker, origin_marker) < 1.0F) {
+            const glm::vec2 origin = map_point(origin_marker);
+            add_line_segment(origin + glm::vec2{-4.0F, 0.0F}, origin + glm::vec2{4.0F, 0.0F}, 1.0F, origin_color);
+            add_line_segment(origin + glm::vec2{0.0F, -4.0F}, origin + glm::vec2{0.0F, 4.0F}, 1.0F, origin_color);
+        }
+
+        if (glm::dot(camera_marker, camera_marker) < 1.0F) {
+            const glm::vec2 camera = map_point(camera_marker);
+            glm::vec2 clipped_a{};
+            glm::vec2 clipped_b{};
+            if (clip_segment_to_unit_disk(camera_marker, forward_marker, clipped_a, clipped_b)) {
+                add_line_segment(map_point(clipped_a), map_point(clipped_b), 2.0F, camera_color);
+            }
+            add_rect(camera.x - 3.0F, camera.y - 3.0F, 6.0F, 6.0F, camera_color);
+        }
+    }
+
+    void add_minimap(float width,
+                     float height,
+                     const RenderSettings& settings,
+                     const CameraState& camera,
+                     const tiling::TilingPatch& patch) {
+        if (patch.tiles.empty() || width <= 0.0F || height <= 0.0F) {
+            return;
+        }
+
+        ensure_static_minimap_cache(settings, patch);
+
+        const math::CameraFrame global_frame = global_camera_frame(camera, patch);
+        const math::Mat3 static_view = math::identity_isometry();
+        const math::Mat3 dynamic_view = math::inverse_isometry(math::frame_to_isometry(global_frame));
+        const math::Vec3 forward_point = frame_offset_point(global_frame, 0.35);
+
+        const double dynamic_query_radius =
+            static_cast<double>(settings.minimap_radius) + patch.metrics.circumradius;
+        tiling::collect_minimap(patch,
+                                global_frame.position,
+                                dynamic_query_radius,
+                                dynamic_view,
+                                dynamic_minimap_points_,
+                                dynamic_minimap_edges_,
+                                settings.minimap_max_points,
+                                settings.minimap_max_edges,
+                                settings.minimap_edge_segments);
+
+        const float margin = 16.0F;
+        const float gap = 12.0F;
+        const float preferred_side = glm::clamp(std::min(width, height) * 0.22F, 104.0F, 150.0F);
+        const float max_side_for_width = (width - 2.0F * margin - gap) * 0.5F;
+        const float side = std::max(72.0F, std::min(preferred_side, max_side_for_width));
+        const float radius = side * 0.5F;
+        const float y = height - margin - radius;
+        const glm::vec2 static_center{margin + radius, y};
+        const glm::vec2 dynamic_center{margin + side + gap + radius, y};
+
+        add_minimap_view(static_center,
+                         radius,
+                         static_minimap_points_,
+                         static_minimap_edges_,
+                         project_minimap_point(math::origin(), static_view),
+                         project_minimap_point(global_frame.position, static_view),
+                         project_minimap_point(forward_point, static_view),
+                         "STATIC");
+        add_minimap_view(dynamic_center,
+                         radius,
+                         dynamic_minimap_points_,
+                         dynamic_minimap_edges_,
+                         project_minimap_point(math::origin(), dynamic_view),
+                         project_minimap_point(global_frame.position, dynamic_view),
+                         project_minimap_point(forward_point, dynamic_view),
+                         "LOCAL");
     }
 
     void add_panel(const RenderSettings& settings,
@@ -679,8 +783,17 @@ private:
     GLuint program_ = 0;
     GLuint vao_ = 0;
     GLuint vbo_ = 0;
-    std::vector<glm::vec2> minimap_points_;
-    std::vector<tiling::MinimapPolyline> minimap_edges_;
+    bool static_minimap_cache_valid_ = false;
+    math::RegularTilingParameters static_minimap_parameters_{};
+    int static_minimap_depth_ = -1;
+    std::size_t static_minimap_tile_count_ = 0;
+    int static_minimap_max_points_ = -1;
+    int static_minimap_max_edges_ = -1;
+    int static_minimap_edge_segments_ = -1;
+    std::vector<glm::vec2> static_minimap_points_;
+    std::vector<tiling::MinimapPolyline> static_minimap_edges_;
+    std::vector<glm::vec2> dynamic_minimap_points_;
+    std::vector<tiling::MinimapPolyline> dynamic_minimap_edges_;
     std::vector<OverlayVertex> vertices_;
 };
 
