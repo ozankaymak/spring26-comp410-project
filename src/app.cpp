@@ -61,6 +61,7 @@ struct RenderSettings {
     int minimap_edge_segments = 8;
     float fog_density = 0.50F;
     glm::vec3 fog_color{0.07F, 0.085F, 0.095F};
+    glm::vec3 atmosphere_color{0.52F, 0.76F, 0.90F};
     int edge_segments = 8;
     int radial_bands = 2;
 };
@@ -193,6 +194,19 @@ double generated_map_radius(const tiling::TilingPatch& patch) {
         radius = std::max(radius, math::intrinsic_distance(origin, tile.center));
     }
     return radius + 1.0e-6;
+}
+
+float atmosphere_strength(float fog_density) {
+    constexpr float kAtmosphereFogThreshold = 0.35F;
+    const float t = glm::clamp(fog_density / kAtmosphereFogThreshold, 0.0F, 1.0F);
+    const float eased = t * t * (3.0F - 2.0F * t);
+    return 1.0F - eased;
+}
+
+glm::vec3 active_sky_color(const RenderSettings& settings) {
+    return glm::mix(settings.fog_color,
+                    settings.atmosphere_color,
+                    atmosphere_strength(settings.fog_density));
 }
 
 constexpr std::array<TilingPreset, 4> kTilingPresets{{
@@ -1436,7 +1450,8 @@ void App::run() {
 
         glfwGetFramebufferSize(window, &width, &height);
 
-        glClearColor(settings.fog_color.x, settings.fog_color.y, settings.fog_color.z, 1.0F);
+        const glm::vec3 sky_color = active_sky_color(settings);
+        glClearColor(sky_color.x, sky_color.y, sky_color.z, 1.0F);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         glEnable(GL_DEPTH_TEST);
@@ -1451,6 +1466,9 @@ void App::run() {
         glUniform1i(glGetUniformLocation(shader.id(), "uProjectionModel"), 1);
         glUniform1f(glGetUniformLocation(shader.id(), "uFogDensity"), settings.fog_density);
         glUniform3fv(glGetUniformLocation(shader.id(), "uFogColor"), 1, &settings.fog_color[0]);
+        const float atmosphere = atmosphere_strength(settings.fog_density);
+        glUniform1f(glGetUniformLocation(shader.id(), "uAtmosphereStrength"), atmosphere);
+        glUniform3fv(glGetUniformLocation(shader.id(), "uAtmosphereColor"), 1, &settings.atmosphere_color[0]);
         const glm::vec3 light_dir = glm::normalize(glm::vec3{0.85F, 1.20F, 0.45F});
         glUniform3fv(glGetUniformLocation(shader.id(), "uLightDir"), 1, &light_dir[0]);
 

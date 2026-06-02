@@ -32,6 +32,8 @@ void test_shader_sources_are_available() {
             "hyperbolic shader exposes a 4D Lorentz view");
     require(hyperbolic_fragment_source.find("uLightDir") != std::string::npos,
             "hyperbolic fragment shader exposes lighting input");
+    require(hyperbolic_fragment_source.find("uAtmosphereStrength") != std::string::npos,
+            "hyperbolic fragment shader exposes atmosphere input");
 
     require_throws<std::runtime_error>(
         [] { (void)hyper::read_text_file(source_path("shaders/missing.vert")); },
