@@ -322,8 +322,6 @@ class DebugOverlay {
         None,
         DragStatic,
         DragDynamic,
-        ResizeStatic,
-        ResizeDynamic,
     };
 
 public:
@@ -583,18 +581,11 @@ private:
 
     MinimapInteraction begin_minimap_interaction(const MinimapWindow& window,
                                                  MinimapInteraction drag_action,
-                                                 MinimapInteraction resize_action,
                                                  const glm::vec2& mouse) const {
         const float w = minimap_window_width(window);
-        const float h = minimap_window_height(window);
         const glm::vec2 min = window.position;
         const glm::vec2 title_max = window.position + glm::vec2{w, 24.0F};
-        const glm::vec2 resize_min = window.position + glm::vec2{w - 18.0F, h - 18.0F};
-        const glm::vec2 resize_max = window.position + glm::vec2{w, h};
 
-        if (contains_point(resize_min, resize_max, mouse)) {
-            return resize_action;
-        }
         if (contains_point(min, title_max, mouse)) {
             return drag_action;
         }
@@ -628,12 +619,10 @@ private:
 
         if (!previous_minimap_mouse_down_) {
             active_minimap_interaction_ =
-                begin_minimap_interaction(dynamic_window_, MinimapInteraction::DragDynamic,
-                                          MinimapInteraction::ResizeDynamic, mouse);
+                begin_minimap_interaction(dynamic_window_, MinimapInteraction::DragDynamic, mouse);
             if (active_minimap_interaction_ == MinimapInteraction::None) {
                 active_minimap_interaction_ =
-                    begin_minimap_interaction(static_window_, MinimapInteraction::DragStatic,
-                                              MinimapInteraction::ResizeStatic, mouse);
+                    begin_minimap_interaction(static_window_, MinimapInteraction::DragStatic, mouse);
             }
 
             drag_offset_ = mouse;
@@ -644,22 +633,12 @@ private:
             }
         }
 
-        auto resize_window = [&](MinimapWindow& minimap_window) {
-            const float content_w = mouse.x - minimap_window.position.x - 16.0F;
-            const float content_h = mouse.y - minimap_window.position.y - 38.0F;
-            minimap_window.size = std::max(content_w, content_h);
-        };
-
         if (active_minimap_interaction_ == MinimapInteraction::DragStatic) {
             static_window_.position = mouse - drag_offset_;
         } else if (active_minimap_interaction_ == MinimapInteraction::DragDynamic) {
             const glm::vec2 dynamic_position = mouse - drag_offset_;
             static_window_.position =
                 dynamic_position - glm::vec2{0.0F, minimap_window_height(static_window_) + kMinimapStackGap};
-        } else if (active_minimap_interaction_ == MinimapInteraction::ResizeStatic) {
-            resize_window(static_window_);
-        } else if (active_minimap_interaction_ == MinimapInteraction::ResizeDynamic) {
-            resize_window(dynamic_window_);
         }
 
         sync_minimap_stack(width, height);
@@ -740,7 +719,6 @@ private:
         const glm::vec4 title_bar{0.08F, 0.16F, 0.18F, 0.94F};
         const glm::vec4 border{0.64F, 0.82F, 0.88F, 0.48F};
         const glm::vec4 title_color{0.90F, 0.96F, 0.98F, 0.92F};
-        const glm::vec4 handle{0.64F, 0.82F, 0.88F, 0.54F};
 
         add_rect(p.x + 4.0F, p.y + 5.0F, w, h, shadow);
         add_rect(p.x, p.y, w, h, body);
@@ -751,11 +729,6 @@ private:
         add_line_segment(p + glm::vec2{w, 0.0F}, p + glm::vec2{w, h}, 1.0F, border);
         add_line_segment(p + glm::vec2{w, h}, p + glm::vec2{0.0F, h}, 1.0F, border);
         add_line_segment(p + glm::vec2{0.0F, h}, p, 1.0F, border);
-
-        const glm::vec2 corner = p + glm::vec2{w - 7.0F, h - 7.0F};
-        add_line_segment(corner + glm::vec2{-12.0F, 4.0F}, corner + glm::vec2{4.0F, -12.0F}, 1.0F, handle);
-        add_line_segment(corner + glm::vec2{-8.0F, 4.0F}, corner + glm::vec2{4.0F, -8.0F}, 1.0F, handle);
-        add_line_segment(corner + glm::vec2{-4.0F, 4.0F}, corner + glm::vec2{4.0F, -4.0F}, 1.0F, handle);
     }
 
     void add_minimap_view(const MinimapWindow& window,
