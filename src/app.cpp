@@ -535,47 +535,50 @@ private:
         return window.size + 38.0F;
     }
 
+    static constexpr float kMinimapStackGap = 12.0F;
+    static constexpr float kMinimapMargin = 16.0F;
+
     static bool contains_point(const glm::vec2& min, const glm::vec2& max, const glm::vec2& point) {
         return point.x >= min.x && point.x <= max.x && point.y >= min.y && point.y <= max.y;
     }
 
-    static void clamp_minimap_window(MinimapWindow& window, float width, float height) {
+    static void clamp_minimap_window_size(MinimapWindow& window, float height) {
         window.size = glm::clamp(window.size, 96.0F, std::min(320.0F, std::max(96.0F, height - 64.0F)));
-        const float max_x = std::max(0.0F, width - minimap_window_width(window));
-        const float max_y = std::max(0.0F, height - minimap_window_height(window));
-        window.position.x = glm::clamp(window.position.x, 0.0F, max_x);
-        window.position.y = glm::clamp(window.position.y, 0.0F, max_y);
+    }
+
+    void sync_minimap_stack(float width, float height) {
+        clamp_minimap_window_size(static_window_, height);
+        clamp_minimap_window_size(dynamic_window_, height);
+
+        const float stack_width = std::max(minimap_window_width(static_window_), minimap_window_width(dynamic_window_));
+        const float stack_height =
+            minimap_window_height(static_window_) + kMinimapStackGap + minimap_window_height(dynamic_window_);
+
+        static_window_.position.x = glm::clamp(static_window_.position.x, 0.0F, std::max(0.0F, width - stack_width));
+        static_window_.position.y =
+            glm::clamp(static_window_.position.y, 0.0F, std::max(0.0F, height - stack_height));
+
+        dynamic_window_.position.x = static_window_.position.x;
+        dynamic_window_.position.y =
+            static_window_.position.y + minimap_window_height(static_window_) + kMinimapStackGap;
     }
 
     void ensure_minimap_windows(float width, float height) {
         if (static_window_.initialized && dynamic_window_.initialized) {
-            clamp_minimap_window(static_window_, width, height);
-            clamp_minimap_window(dynamic_window_, width, height);
+            sync_minimap_stack(width, height);
             return;
         }
 
-        const float margin = 16.0F;
-        const float gap = 12.0F;
         const float side = glm::clamp(std::min(width, height) * 0.24F, 132.0F, 190.0F);
         static_window_.size = side;
         dynamic_window_.size = side;
 
-        const float window_w = minimap_window_width(static_window_);
-        const float window_h = minimap_window_height(static_window_);
-        const bool side_by_side = width >= margin * 2.0F + window_w * 2.0F + gap;
-        if (side_by_side) {
-            dynamic_window_.position = glm::vec2{width - margin - window_w, margin};
-            static_window_.position = glm::vec2{dynamic_window_.position.x - gap - window_w, margin};
-        } else {
-            static_window_.position = glm::vec2{std::max(margin, width - margin - window_w), margin};
-            dynamic_window_.position =
-                glm::vec2{static_window_.position.x, margin + window_h + gap};
-        }
+        const float stack_width = std::max(minimap_window_width(static_window_), minimap_window_width(dynamic_window_));
+        static_window_.position = glm::vec2{std::max(0.0F, width - kMinimapMargin - stack_width), kMinimapMargin};
 
         static_window_.initialized = true;
         dynamic_window_.initialized = true;
-        clamp_minimap_window(static_window_, width, height);
-        clamp_minimap_window(dynamic_window_, width, height);
+        sync_minimap_stack(width, height);
     }
 
     MinimapInteraction begin_minimap_interaction(const MinimapWindow& window,
@@ -645,21 +648,21 @@ private:
             const float content_w = mouse.x - minimap_window.position.x - 16.0F;
             const float content_h = mouse.y - minimap_window.position.y - 38.0F;
             minimap_window.size = std::max(content_w, content_h);
-            clamp_minimap_window(minimap_window, width, height);
         };
 
         if (active_minimap_interaction_ == MinimapInteraction::DragStatic) {
             static_window_.position = mouse - drag_offset_;
-            clamp_minimap_window(static_window_, width, height);
         } else if (active_minimap_interaction_ == MinimapInteraction::DragDynamic) {
-            dynamic_window_.position = mouse - drag_offset_;
-            clamp_minimap_window(dynamic_window_, width, height);
+            const glm::vec2 dynamic_position = mouse - drag_offset_;
+            static_window_.position =
+                dynamic_position - glm::vec2{0.0F, minimap_window_height(static_window_) + kMinimapStackGap};
         } else if (active_minimap_interaction_ == MinimapInteraction::ResizeStatic) {
             resize_window(static_window_);
         } else if (active_minimap_interaction_ == MinimapInteraction::ResizeDynamic) {
             resize_window(dynamic_window_);
         }
 
+        sync_minimap_stack(width, height);
         previous_minimap_mouse_down_ = true;
     }
 
