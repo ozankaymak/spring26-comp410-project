@@ -1,13 +1,13 @@
-# Hyperbolica
+# HyperGL
 
-Interactive curved-space rendering experiment in C++17.
+Interactive 3D curved-space rendering experiment in C++17.
 
 Current pieces:
 
 - hyperboloid-model math utilities
 - regular `{p,q}` tiling metric helpers
 - tile-local crossing and rebasing for walking across generated tiles
-- a GLFW/OpenGL application shell
+- a GLFW/OpenGL perspective renderer for H3-embedded tilings
 - shader and mesh wrappers
 - CTest tests
 
@@ -43,14 +43,15 @@ ctest --test-dir build --output-on-failure
 Progress-demo controls:
 
 - `WASD` or arrow keys: move across the `{4,6}` patch
-- Mouse drag: look around (when captured)
+- Mouse: look around in first person (when captured)
+- `Space` / `Shift`: raise/lower the camera height
 - `1`: render `{4,6}` with six squares meeting at each corner
 - `2`: render `{3,7}` with seven triangles meeting at each corner
 - `3`: render `{5,4}`
 - `4`: render `{7,3}`
 - `[` / `-`: decrease movement speed
 - `]` / `=`: increase movement speed
-- `Q` / `E`: zoom out/in
+- `Q` / `E`: zoom out/in by changing perspective field of view
 - `F1`: show or hide the debug overlay
 - `G`: toggle floor grid
 - `F`: toggle wireframe
