@@ -24,7 +24,7 @@ void collect_minimap_points_from_tiles(const TilingPatch& patch,
                                        std::vector<glm::vec2>& out,
                                        int max_points = 2000);
 
-// Collect geodesic edges between neighboring tiles projected to the minimap disk.
+// Collect projected tile boundary edges for candidate tiles.
 void collect_minimap_edges_from_tiles(const TilingPatch& patch,
                                       const std::vector<int>& tile_indices,
                                       const math::Mat3& minimap_view,

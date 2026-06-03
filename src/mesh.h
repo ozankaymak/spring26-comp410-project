@@ -8,7 +8,9 @@
 namespace hyper {
 
 struct Vertex {
-    glm::vec3 position{};
+    // Hyperboloid point in H3 using (x, y, z, w), with metric +++-.
+    glm::vec4 position{};
+    glm::vec3 normal{};
     glm::vec3 color{};
 };
 
@@ -32,6 +34,7 @@ public:
 
     void upload(const MeshData& data);
     void draw() const;
+    void draw_lines() const;
     void reset();
 
     bool uploaded() const;
@@ -45,4 +48,3 @@ private:
 };
 
 } // namespace hyper
-

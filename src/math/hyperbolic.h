@@ -65,6 +65,9 @@ Vec3 hyperboloid_normalize(const Vec3& v);
 // Requires both inputs to already be valid future-sheet hyperboloid points.
 double intrinsic_distance(const Vec3& a, const Vec3& b);
 
+// Interpolates along the hyperbolic geodesic connecting a and b.
+Vec3 geodesic_lerp(const Vec3& a, const Vec3& b, double t);
+
 Vec2 project_to_poincare_disk(const Vec3& p);
 Vec2 project_to_klein_disk(const Vec3& p);
 

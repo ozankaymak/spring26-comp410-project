@@ -9,9 +9,12 @@ namespace hyper {
 MeshData make_test_triangle_mesh() {
     return MeshData{
         {
-            Vertex{glm::vec3{-0.60F, -0.45F, 0.0F}, glm::vec3{0.90F, 0.25F, 0.18F}},
-            Vertex{glm::vec3{0.60F, -0.45F, 0.0F}, glm::vec3{0.15F, 0.70F, 0.45F}},
-            Vertex{glm::vec3{0.00F, 0.60F, 0.0F}, glm::vec3{0.20F, 0.45F, 0.95F}},
+            Vertex{glm::vec4{-0.60F, -0.45F, 0.0F, 1.0F}, glm::vec3{0.0F, 0.0F, 1.0F},
+                   glm::vec3{0.90F, 0.25F, 0.18F}},
+            Vertex{glm::vec4{0.60F, -0.45F, 0.0F, 1.0F}, glm::vec3{0.0F, 0.0F, 1.0F},
+                   glm::vec3{0.15F, 0.70F, 0.45F}},
+            Vertex{glm::vec4{0.00F, 0.60F, 0.0F, 1.0F}, glm::vec3{0.0F, 0.0F, 1.0F},
+                   glm::vec3{0.20F, 0.45F, 0.95F}},
         },
         {0U, 1U, 2U},
     };
@@ -62,11 +65,15 @@ void Mesh::upload(const MeshData& data) {
                  data.indices.data(), GL_STATIC_DRAW);
 
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex),
                           reinterpret_cast<void*>(offsetof(Vertex, position)));
 
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+                          reinterpret_cast<void*>(offsetof(Vertex, normal)));
+
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
                           reinterpret_cast<void*>(offsetof(Vertex, color)));
 
     glBindVertexArray(0);
@@ -79,6 +86,16 @@ void Mesh::draw() const {
 
     glBindVertexArray(vao_);
     glDrawElements(GL_TRIANGLES, index_count_, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+}
+
+void Mesh::draw_lines() const {
+    if (!uploaded()) {
+        return;
+    }
+
+    glBindVertexArray(vao_);
+    glDrawElements(GL_LINES, index_count_, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
 }
 
@@ -110,4 +127,3 @@ GLsizei Mesh::index_count() const {
 }
 
 } // namespace hyper
-

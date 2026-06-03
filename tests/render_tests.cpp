@@ -19,11 +19,21 @@ std::filesystem::path source_path(const std::filesystem::path& relative) {
 void test_shader_sources_are_available() {
     const std::string vertex_source = hyper::read_text_file(source_path("shaders/basic.vert"));
     const std::string fragment_source = hyper::read_text_file(source_path("shaders/basic.frag"));
+    const std::string hyperbolic_vertex_source = hyper::read_text_file(source_path("shaders/hyperbolic.vert"));
+    const std::string hyperbolic_fragment_source = hyper::read_text_file(source_path("shaders/hyperbolic.frag"));
 
     require(vertex_source.find("#version 330 core") != std::string::npos, "vertex shader declares GLSL version");
     require(vertex_source.find("u_mvp") != std::string::npos, "vertex shader exposes the transform uniform");
     require(fragment_source.find("#version 330 core") != std::string::npos, "fragment shader declares GLSL version");
     require(fragment_source.find("frag_color") != std::string::npos, "fragment shader writes a color output");
+    require(hyperbolic_vertex_source.find("layout(location = 0) in vec4 aPosition") != std::string::npos,
+            "hyperbolic shader accepts H3 positions");
+    require(hyperbolic_vertex_source.find("uniform mat4 uLorentzView") != std::string::npos,
+            "hyperbolic shader exposes a 4D Lorentz view");
+    require(hyperbolic_fragment_source.find("uLightDir") != std::string::npos,
+            "hyperbolic fragment shader exposes lighting input");
+    require(hyperbolic_fragment_source.find("uAtmosphereStrength") != std::string::npos,
+            "hyperbolic fragment shader exposes atmosphere input");
 
     require_throws<std::runtime_error>(
         [] { (void)hyper::read_text_file(source_path("shaders/missing.vert")); },

@@ -1,5 +1,6 @@
 #include "test_support.h"
 #include "tiling_core.h"
+#include "tiling_minimap.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -67,6 +68,131 @@ void test_neighbor_centers_are_one_tile_step_away() {
     }
 }
 
+void test_minimap_collects_tile_boundary_edges() {
+    const hyper::tiling::TilingPatch patch =
+        hyper::tiling::generate_tiling_patch(hyper::math::RegularTilingParameters{4, 6}, 0);
+
+    std::vector<glm::vec2> points;
+    std::vector<hyper::tiling::MinimapPolyline> edges;
+    hyper::tiling::collect_minimap(patch,
+                                   hyper::math::origin(),
+                                   0.1,
+                                   hyper::math::identity_isometry(),
+                                   points,
+                                   edges,
+                                   10,
+                                   10,
+                                   8);
+
+    require(points.size() == 1, "depth-zero minimap collects the root tile center");
+
+    int edge_count = 0;
+    for (const hyper::tiling::MinimapPolyline& edge : edges) {
+        if (edge.empty()) {
+            continue;
+        }
+
+        require(edge.size() >= 2, "minimap edge contains a drawable polyline");
+        for (const glm::vec2& point : edge) {
+            require(point.x * point.x + point.y * point.y < 1.0F,
+                    "minimap edge point stays inside the Poincare disk");
+        }
+        ++edge_count;
+    }
+
+    require(edge_count == 4, "depth-zero square minimap has four tile boundary edges");
+}
+
+void test_minimap_deduplicates_shared_boundary_edges() {
+    const hyper::tiling::TilingPatch patch =
+        hyper::tiling::generate_tiling_patch(hyper::math::RegularTilingParameters{4, 6}, 1);
+
+    std::vector<glm::vec2> points;
+    std::vector<hyper::tiling::MinimapPolyline> edges;
+    hyper::tiling::collect_minimap(patch,
+                                   hyper::math::origin(),
+                                   10.0,
+                                   hyper::math::identity_isometry(),
+                                   points,
+                                   edges,
+                                   100,
+                                   100,
+                                   8);
+
+    int edge_count = 0;
+    for (const hyper::tiling::MinimapPolyline& edge : edges) {
+        if (!edge.empty()) {
+            ++edge_count;
+        }
+    }
+
+    require(edge_count == 16, "depth-one square minimap deduplicates four shared root edges");
+}
+
+void test_minimap_survives_repeated_forward_movement() {
+    const hyper::tiling::TilingPatch patch =
+        hyper::tiling::generate_tiling_patch(hyper::math::RegularTilingParameters{4, 6}, 5);
+    int current_tile = 0;
+    hyper::math::CameraFrame frame = hyper::math::orthonormalize_frame(hyper::math::CameraFrame{
+        hyper::math::origin(),
+        hyper::math::Vec3{0.0, 0.0, 1.0},
+        hyper::math::Vec3{0.0, 1.0, 0.0},
+    });
+
+    std::vector<glm::vec2> points;
+    std::vector<hyper::tiling::MinimapPolyline> edges;
+    for (int step = 0; step < 500; ++step) {
+        hyper::math::CameraFrame moved = hyper::math::move_frame(frame, hyper::math::Vec2{0.04, 0.0});
+        int moved_tile = current_tile;
+        if (hyper::tiling::rebase_frame_across_edges(patch, moved_tile, moved)) {
+            frame = moved;
+            current_tile = moved_tile;
+        }
+
+        const hyper::math::CameraFrame global_frame =
+            hyper::tiling::global_frame_from_tile(frame, patch.tiles[static_cast<std::size_t>(current_tile)]);
+        const hyper::math::Mat3 minimap_view =
+            hyper::math::inverse_isometry(hyper::math::frame_to_isometry(global_frame));
+        hyper::tiling::collect_minimap(patch,
+                                       global_frame.position,
+                                       4.5,
+                                       minimap_view,
+                                       points,
+                                       edges,
+                                       1200,
+                                       3000,
+                                       8);
+    }
+}
+
+int count_tiles_at_root_vertex(hyper::math::RegularTilingParameters parameters, int depth) {
+    const hyper::tiling::TilingPatch patch = hyper::tiling::generate_tiling_patch(parameters, depth);
+    const hyper::math::Vec3 target = patch.base_polygon_vertices[0];
+
+    int count = 0;
+    for (const hyper::tiling::Tile& tile : patch.tiles) {
+        bool touches_target = false;
+        for (const hyper::math::Vec3& local_vertex : patch.base_polygon_vertices) {
+            const hyper::math::Vec3 global_vertex = hyper::math::apply_isometry(tile.transform, local_vertex);
+            if (hyper::math::intrinsic_distance(target, global_vertex) < 1.0e-5) {
+                touches_target = true;
+            }
+        }
+        if (touches_target) {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+void test_corner_tile_count_matches_q() {
+    require(count_tiles_at_root_vertex(hyper::math::RegularTilingParameters{4, 6}, 5) == 6,
+            "{4,6} has six squares around an interior corner");
+    require(count_tiles_at_root_vertex(hyper::math::RegularTilingParameters{3, 7}, 6) == 7,
+            "{3,7} has seven triangles around an interior corner");
+}
+
 void test_patch_rejects_invalid_inputs() {
     require_throws<std::invalid_argument>(
         [] { (void)hyper::tiling::generate_tiling_patch(hyper::math::RegularTilingParameters{4, 6}, -1); },
@@ -82,23 +208,45 @@ void test_patch_rejects_invalid_inputs() {
 }
 
 void test_find_current_tile_and_rebasing() {
-    const hyper::tiling::TilingPatch patch = hyper::tiling::generate_tiling_patch(hyper::math::RegularTilingParameters{4, 6}, 1);
+    const hyper::math::RegularTilingParameters parameters{4, 6};
+    const hyper::math::RegularTilingMetrics metrics = hyper::math::regular_tiling_metrics(parameters);
+    const hyper::tiling::TilingPatch patch = hyper::tiling::generate_tiling_patch(parameters, 1);
     const hyper::math::CameraFrame canonical = hyper::math::canonical_frame();
 
     // Should find root tile for origin
     const int root_tile = hyper::tiling::find_current_tile(patch, canonical.position);
     require(root_tile == 0, "origin is in root tile");
 
-    // Move to a neighbor
-    const hyper::math::CameraFrame moved = hyper::math::move_frame(canonical, hyper::math::Vec2{1.0, 0.0});
+    // Move through side 0, whose outward normal sits halfway between the first
+    // two base-polygon vertices.
+    const double side_crossing_distance = metrics.inradius + 0.2;
+    const double diagonal = side_crossing_distance / std::sqrt(2.0);
+    const hyper::math::CameraFrame moved = hyper::math::move_frame(canonical, hyper::math::Vec2{diagonal, diagonal});
+    require(hyper::tiling::locate_crossed_side(patch, moved.position) == 0,
+            "moved position crossed root side zero");
+
     const int neighbor_tile = hyper::tiling::find_current_tile(patch, moved.position);
     require(neighbor_tile != 0, "moved position is in a different tile");
 
-    // Rebase to the neighbor tile
-    const hyper::tiling::Tile& neighbor = patch.tiles[static_cast<size_t>(neighbor_tile)];
-    const hyper::math::CameraFrame rebased = hyper::tiling::rebase_frame_to_tile(moved, neighbor);
-    const int rebased_tile = hyper::tiling::find_current_tile(patch, rebased.position);
-    require(rebased_tile == neighbor_tile, "rebased frame is in the same tile");
+    int current_tile = 0;
+    hyper::math::CameraFrame rebased = moved;
+    require(hyper::tiling::rebase_frame_across_edges(patch, current_tile, rebased),
+            "crossed frame rebases through linked neighbor");
+    require(current_tile == neighbor_tile, "rebase updates current tile");
+    require(hyper::tiling::locate_crossed_side(patch, rebased.position) < 0,
+            "rebased frame is local to the destination tile");
+
+    const hyper::math::CameraFrame rebased_global =
+        hyper::tiling::global_frame_from_tile(rebased, patch.tiles[static_cast<std::size_t>(current_tile)]);
+    require_close(hyper::math::intrinsic_distance(moved.position, rebased_global.position), 0.0,
+                  "rebasing preserves global position", 1.0e-7);
+
+    const hyper::tiling::TilingPatch boundary_patch = hyper::tiling::generate_tiling_patch(parameters, 0);
+    int boundary_tile = 0;
+    hyper::math::CameraFrame boundary_frame = moved;
+    require(!hyper::tiling::rebase_frame_across_edges(boundary_patch, boundary_tile, boundary_frame),
+            "crossing beyond the generated patch is rejected");
+    require(boundary_tile == 0, "failed boundary rebase preserves current tile");
 }
 
 } // namespace
@@ -108,8 +256,11 @@ int main() {
         test_base_polygon_vertices();
         test_patch_depth_and_centers();
         test_neighbor_centers_are_one_tile_step_away();
+        test_minimap_collects_tile_boundary_edges();
+        test_minimap_deduplicates_shared_boundary_edges();
+        test_minimap_survives_repeated_forward_movement();
+        test_corner_tile_count_matches_q();
         test_patch_rejects_invalid_inputs();
         test_find_current_tile_and_rebasing();
     });
 }
-

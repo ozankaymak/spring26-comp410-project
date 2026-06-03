@@ -1,10 +1,7 @@
 #include "tiling_minimap.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
-#include <cstdint>
-#include <unordered_set>
 
 namespace hyper::tiling {
 
@@ -12,19 +9,17 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-// Unique key for an undirected edge (a, b).
-std::int64_t edge_key(int a, int b) {
-    int lo = std::min(a, b);
-    int hi = std::max(a, b);
-    return (static_cast<std::int64_t>(lo) << 32) | static_cast<std::uint32_t>(hi);
-}
-
 // Apply the minimap view isometry then project to the Poincaré disk.
 glm::dvec2 project_to_minimap(const math::Vec3& world_pos, const math::Mat3& minimap_view) {
-    const math::Vec3 local = math::apply_isometry(minimap_view, world_pos);
+    const math::Vec3 local = math::hyperboloid_normalize(math::apply_isometry(minimap_view, world_pos));
     const math::Vec2 p = math::project_to_poincare_disk(local);
     return {p.x, p.y};
 }
+
+struct MinimapEdge {
+    math::Vec3 a{};
+    math::Vec3 b{};
+};
 
 } // namespace
 
@@ -63,29 +58,45 @@ void collect_minimap_edges_from_tiles(const TilingPatch& patch,
                                       std::vector<MinimapPolyline>& out,
                                       int max_edges,
                                       int segments) {
-    if (max_edges <= 0 || tile_indices.empty()) {
+    if (max_edges <= 0 || tile_indices.empty() || patch.base_polygon_vertices.empty()) {
         for (MinimapPolyline& pl : out) pl.clear();
         return;
     }
 
-    // Collect unique edges among the candidate tiles.
-    std::unordered_set<std::int64_t> seen;
-    std::vector<std::pair<int, int>> edge_list;
+    std::vector<bool> selected(patch.tiles.size(), false);
+    for (int tile_idx : tile_indices) {
+        if (tile_idx >= 0 && tile_idx < static_cast<int>(patch.tiles.size())) {
+            selected[static_cast<std::size_t>(tile_idx)] = true;
+        }
+    }
+
+    std::vector<MinimapEdge> edge_list;
     edge_list.reserve(static_cast<std::size_t>(max_edges));
 
     bool limit_hit = false;
     for (int tile_idx : tile_indices) {
         if (limit_hit) break;
+        if (tile_idx < 0 || tile_idx >= static_cast<int>(patch.tiles.size())) continue;
         const Tile& tile = patch.tiles[static_cast<std::size_t>(tile_idx)];
-        for (int nbr : tile.neighbors) {
-            if (nbr < 0) continue;
-            const std::int64_t key = edge_key(tile_idx, nbr);
-            if (seen.insert(key).second) {
-                edge_list.emplace_back(tile_idx, nbr);
-                if (static_cast<int>(edge_list.size()) >= max_edges) {
-                    limit_hit = true;
-                    break;
-                }
+        for (std::size_t side = 0; side < patch.base_polygon_vertices.size(); ++side) {
+            const int neighbor =
+                side < tile.neighbors.size() ? tile.neighbors[side] : -1;
+            if (neighbor >= 0 &&
+                neighbor < static_cast<int>(selected.size()) &&
+                selected[static_cast<std::size_t>(neighbor)] &&
+                neighbor < tile_idx) {
+                continue;
+            }
+
+            const std::size_t next_side = (side + 1U) % patch.base_polygon_vertices.size();
+            const math::Vec3 a =
+                math::hyperboloid_normalize(math::apply_isometry(tile.transform, patch.base_polygon_vertices[side]));
+            const math::Vec3 b = math::hyperboloid_normalize(
+                math::apply_isometry(tile.transform, patch.base_polygon_vertices[next_side]));
+            edge_list.push_back(MinimapEdge{a, b});
+            if (static_cast<int>(edge_list.size()) >= max_edges) {
+                limit_hit = true;
+                break;
             }
         }
     }
@@ -101,10 +112,8 @@ void collect_minimap_edges_from_tiles(const TilingPatch& patch,
         MinimapPolyline& polyline = out[ei];
         polyline.clear();
 
-        const glm::dvec2 pa = project_to_minimap(
-            patch.tiles[static_cast<std::size_t>(edge_list[ei].first)].center, minimap_view);
-        const glm::dvec2 pb = project_to_minimap(
-            patch.tiles[static_cast<std::size_t>(edge_list[ei].second)].center, minimap_view);
+        const glm::dvec2 pa = project_to_minimap(edge_list[ei].a, minimap_view);
+        const glm::dvec2 pb = project_to_minimap(edge_list[ei].b, minimap_view);
 
         auto push_point = [&](const glm::dvec2& p) {
             polyline.emplace_back(static_cast<float>(p.x), static_cast<float>(p.y));

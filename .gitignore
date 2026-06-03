@@ -16,3 +16,6 @@ out/
 *.a
 *.so
 *.dylib
+
+# Cache
+.cache/

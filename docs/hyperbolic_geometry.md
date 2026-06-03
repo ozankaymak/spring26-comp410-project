@@ -140,6 +140,21 @@ tile across its sides. Each side reflection is a Lorentz isometry, so generated
 tile centers stay on the hyperboloid. Duplicate centers are merged with a small
 distance tolerance during breadth-first expansion.
 
+## Tile Crossing And Rebasing
+
+The playable demo stores the camera frame in the local coordinates of the
+current tile. To detect a tile crossing, the local camera position is projected
+to the Klein disk, where geodesic polygon edges are straight line segments.
+The base polygon vertices are counter-clockwise, so an inside point stays on
+the left side of every edge. A negative half-plane margin identifies the
+crossed side.
+
+When a linked neighbor exists, the frame is converted to global patch
+coordinates with the current tile transform and then converted into the
+neighbor tile's local coordinates with the neighbor inverse transform. This
+keeps movement continuous while preventing the local frame from drifting far
+from the current tile.
+
 ## Projection Helpers
 
 The math layer exposes projection helpers without forcing a renderer choice:
