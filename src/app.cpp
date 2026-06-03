@@ -35,6 +35,11 @@ constexpr float kMaxMoveSpeed = 8.0F;
 constexpr float kMinEyeHeight = 0.08F;
 constexpr float kMaxEyeHeight = 1.75F;
 constexpr float kEyeLiftSpeed = 0.95F;
+constexpr float kBaseFovDegrees = 74.0F;
+constexpr float kMinFovDegrees = 34.0F;
+constexpr float kMaxFovDegrees = 100.0F;
+constexpr float kMinViewZoom = kBaseFovDegrees / kMaxFovDegrees;
+constexpr float kMaxViewZoom = kBaseFovDegrees / kMinFovDegrees;
 
 struct GlfwContext {
     GlfwContext() {
@@ -1118,10 +1123,10 @@ void process_input(GLFWwindow* window, CameraState& camera, const tiling::Tiling
     }
 
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
-        camera.zoom = glm::min(camera.zoom + dt, 3.0F);
+        camera.zoom = glm::min(camera.zoom + dt, kMaxViewZoom);
     }
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
-        camera.zoom = glm::max(camera.zoom - dt, 0.25F);
+        camera.zoom = glm::max(camera.zoom - dt, kMinViewZoom);
     }
     if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
         camera.eye_height = glm::min(camera.eye_height + kEyeLiftSpeed * dt, kMaxEyeHeight);
@@ -1350,8 +1355,8 @@ math::CameraFrame global_camera_frame(const CameraState& camera, const tiling::T
 
 glm::mat4 euclidean_projection(int width, int height, float zoom) {
     const float aspect = height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0F;
-    const float clamped_zoom = glm::clamp(zoom, 0.25F, 3.0F);
-    const float fov_degrees = glm::clamp(74.0F / clamped_zoom, 34.0F, 100.0F);
+    const float clamped_zoom = glm::clamp(zoom, kMinViewZoom, kMaxViewZoom);
+    const float fov_degrees = glm::clamp(kBaseFovDegrees / clamped_zoom, kMinFovDegrees, kMaxFovDegrees);
     return glm::perspective(glm::radians(fov_degrees), aspect, 0.01F, 8.0F);
 }
 
