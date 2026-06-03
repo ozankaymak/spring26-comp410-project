@@ -6,6 +6,8 @@ in float vHypDist;
 
 uniform float uFogDensity;
 uniform vec3 uFogColor;
+uniform float uAtmosphereStrength;
+uniform vec3 uAtmosphereColor;
 uniform vec3 uLightDir;
 
 out vec4 FragColor;
@@ -20,5 +22,10 @@ void main() {
     fog = clamp(fog, 0.0, 1.0);
 
     vec3 lit_color = vColor * lighting;
-    FragColor = vec4(mix(uFogColor, lit_color, fog), 1.0);
+    vec3 fogged_color = mix(uFogColor, lit_color, fog);
+
+    float atmosphere = 1.0 - exp(-0.18 * vHypDist);
+    atmosphere = clamp(atmosphere * uAtmosphereStrength, 0.0, 1.0);
+
+    FragColor = vec4(mix(fogged_color, uAtmosphereColor, atmosphere), 1.0);
 }

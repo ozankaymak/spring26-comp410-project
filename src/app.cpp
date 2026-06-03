@@ -4,6 +4,7 @@
 #include "mesh.h"
 #include "shader.h"
 #include "tiling_core.h"
+#include "tiling_minimap.h"
 
 #include <chrono>
 #include <array>
@@ -34,6 +35,11 @@ constexpr float kMaxMoveSpeed = 8.0F;
 constexpr float kMinEyeHeight = 0.08F;
 constexpr float kMaxEyeHeight = 1.75F;
 constexpr float kEyeLiftSpeed = 0.95F;
+constexpr float kBaseFovDegrees = 74.0F;
+constexpr float kMinFovDegrees = 34.0F;
+constexpr float kMaxFovDegrees = 100.0F;
+constexpr float kMinViewZoom = kBaseFovDegrees / kMaxFovDegrees;
+constexpr float kMaxViewZoom = kBaseFovDegrees / kMinFovDegrees;
 
 struct GlfwContext {
     GlfwContext() {
@@ -53,8 +59,14 @@ struct RenderSettings {
     bool show_grid = true;
     bool show_wireframe = false;
     bool show_debug_ui = true;
+    bool show_minimap = true;
+    float minimap_radius = 4.5F;
+    int minimap_max_points = 1200;
+    int minimap_max_edges = 3000;
+    int minimap_edge_segments = 8;
     float fog_density = 0.50F;
     glm::vec3 fog_color{0.07F, 0.085F, 0.095F};
+    glm::vec3 atmosphere_color{0.52F, 0.76F, 0.90F};
     int edge_segments = 8;
     int radial_bands = 2;
 };
@@ -95,6 +107,7 @@ struct DebugInputState {
     bool v_down = false;
     bool b_down = false;
     bool n_down = false;
+    bool m_down = false;
 };
 
 struct OverlayVertex {
@@ -116,6 +129,90 @@ void append_vertex(MeshData& mesh,
                    const glm::vec3& color);
 MeshData make_curved_tile_mesh(const tiling::TilingPatch& patch, int radial_bands, int edge_segments);
 MeshData make_grid_mesh(const tiling::TilingPatch& patch, int edge_segments);
+
+glm::vec2 clamp_to_disk(const glm::vec2& p) {
+    constexpr float kClipRadius = 0.9995F;
+    const float r2 = glm::dot(p, p);
+    if (r2 <= kClipRadius * kClipRadius || r2 <= 0.0F) {
+        return p;
+    }
+
+    return p * (kClipRadius / std::sqrt(r2));
+}
+
+bool clip_segment_to_unit_disk(const glm::vec2& a,
+                               const glm::vec2& b,
+                               glm::vec2& out_a,
+                               glm::vec2& out_b) {
+    const glm::vec2 d = b - a;
+    const float aa = glm::dot(d, d);
+    if (aa < 1.0e-12F) {
+        if (glm::dot(a, a) > 1.0F) {
+            return false;
+        }
+        out_a = clamp_to_disk(a);
+        out_b = clamp_to_disk(b);
+        return true;
+    }
+
+    const float bb = 2.0F * glm::dot(a, d);
+    const float cc = glm::dot(a, a) - 1.0F;
+    const float discriminant = bb * bb - 4.0F * aa * cc;
+    if (discriminant < 0.0F) {
+        return false;
+    }
+
+    const float root = std::sqrt(std::max(discriminant, 0.0F));
+    float t0 = (-bb - root) / (2.0F * aa);
+    float t1 = (-bb + root) / (2.0F * aa);
+    if (t0 > t1) {
+        std::swap(t0, t1);
+    }
+
+    const float enter = std::max(0.0F, t0);
+    const float exit = std::min(1.0F, t1);
+    if (enter > exit) {
+        return false;
+    }
+
+    out_a = clamp_to_disk(a + d * enter);
+    out_b = clamp_to_disk(a + d * exit);
+    return true;
+}
+
+glm::vec2 project_minimap_point(const math::Vec3& world_pos, const math::Mat3& minimap_view) {
+    const math::Vec3 local = math::hyperboloid_normalize(math::apply_isometry(minimap_view, world_pos));
+    const math::Vec2 projected = math::project_to_poincare_disk(local);
+    return clamp_to_disk(glm::vec2{static_cast<float>(projected.x), static_cast<float>(projected.y)});
+}
+
+math::Vec3 frame_offset_point(const math::CameraFrame& frame, double forward_distance) {
+    const math::Vec3 local_offset =
+        math::apply_isometry(math::lorentz_boost(math::Vec2{forward_distance, 0.0}), math::origin());
+    return math::hyperboloid_normalize(math::apply_isometry(math::frame_to_isometry(frame), local_offset));
+}
+
+double generated_map_radius(const tiling::TilingPatch& patch) {
+    double radius = 0.0;
+    const math::Vec3 origin = math::origin();
+    for (const tiling::Tile& tile : patch.tiles) {
+        radius = std::max(radius, math::intrinsic_distance(origin, tile.center));
+    }
+    return radius + 1.0e-6;
+}
+
+float atmosphere_strength(float fog_density) {
+    constexpr float kAtmosphereFogThreshold = 0.35F;
+    const float t = glm::clamp(fog_density / kAtmosphereFogThreshold, 0.0F, 1.0F);
+    const float eased = t * t * (3.0F - 2.0F * t);
+    return 1.0F - eased;
+}
+
+glm::vec3 active_sky_color(const RenderSettings& settings) {
+    return glm::mix(settings.fog_color,
+                    settings.atmosphere_color,
+                    atmosphere_strength(settings.fog_density));
+}
 
 constexpr std::array<TilingPreset, 4> kTilingPresets{{
     TilingPreset{GLFW_KEY_1, math::RegularTilingParameters{4, 6}, "1 {4,6} 6 SQUARES"},
@@ -234,6 +331,18 @@ std::array<std::uint8_t, 7> glyph_rows(char ch) {
 }
 
 class DebugOverlay {
+    struct MinimapWindow {
+        glm::vec2 position{};
+        float size = 150.0F;
+        bool initialized = false;
+    };
+
+    enum class MinimapInteraction {
+        None,
+        DragStatic,
+        DragDynamic,
+    };
+
 public:
     ~DebugOverlay() {
         shutdown();
@@ -312,7 +421,8 @@ void main() {
         }
     }
 
-    void draw(int width,
+    void draw(GLFWwindow* window,
+              int width,
               int height,
               const RenderSettings& settings,
               const CameraState& camera,
@@ -328,6 +438,9 @@ void main() {
         } else {
             add_rect(10.0F, 10.0F, 138.0F, 24.0F, glm::vec4{0.02F, 0.03F, 0.04F, 0.72F});
             add_text(18.0F, 18.0F, "F1 DEBUG UI", 2.0F, glm::vec4{0.88F, 0.94F, 1.00F, 0.92F});
+        }
+        if (settings.show_minimap) {
+            add_minimap(window, static_cast<float>(width), static_cast<float>(height), settings, camera, patch);
         }
 
         if (vertices_.empty()) {
@@ -368,6 +481,196 @@ private:
         vertices_.push_back(d);
     }
 
+    void add_triangle(const glm::vec2& a,
+                      const glm::vec2& b,
+                      const glm::vec2& c,
+                      const glm::vec4& color) {
+        vertices_.push_back(OverlayVertex{a, color});
+        vertices_.push_back(OverlayVertex{b, color});
+        vertices_.push_back(OverlayVertex{c, color});
+    }
+
+    void add_line_segment(const glm::vec2& a,
+                          const glm::vec2& b,
+                          float thickness,
+                          const glm::vec4& color) {
+        const glm::vec2 d = b - a;
+        const float len2 = glm::dot(d, d);
+        if (len2 <= 1.0e-6F) {
+            return;
+        }
+
+        const glm::vec2 unit = d / std::sqrt(len2);
+        const glm::vec2 normal{-unit.y, unit.x};
+        const glm::vec2 offset = normal * (0.5F * thickness);
+        const glm::vec2 p0 = a + offset;
+        const glm::vec2 p1 = b + offset;
+        const glm::vec2 p2 = b - offset;
+        const glm::vec2 p3 = a - offset;
+        add_triangle(p0, p1, p2, color);
+        add_triangle(p0, p2, p3, color);
+    }
+
+    void add_circle_filled(const glm::vec2& center,
+                           float radius,
+                           int segments,
+                           const glm::vec4& color) {
+        const int count = std::max(8, segments);
+        constexpr float kTwoPi = 6.28318530717958647692F;
+        for (int i = 0; i < count; ++i) {
+            const float a0 = kTwoPi * static_cast<float>(i) / static_cast<float>(count);
+            const float a1 = kTwoPi * static_cast<float>(i + 1) / static_cast<float>(count);
+            add_triangle(center,
+                         center + radius * glm::vec2{std::cos(a0), std::sin(a0)},
+                         center + radius * glm::vec2{std::cos(a1), std::sin(a1)},
+                         color);
+        }
+    }
+
+    void add_circle_outline(const glm::vec2& center,
+                            float radius,
+                            int segments,
+                            float thickness,
+                            const glm::vec4& color) {
+        const int count = std::max(8, segments);
+        constexpr float kTwoPi = 6.28318530717958647692F;
+        for (int i = 0; i < count; ++i) {
+            const float a0 = kTwoPi * static_cast<float>(i) / static_cast<float>(count);
+            const float a1 = kTwoPi * static_cast<float>(i + 1) / static_cast<float>(count);
+            add_line_segment(center + radius * glm::vec2{std::cos(a0), std::sin(a0)},
+                             center + radius * glm::vec2{std::cos(a1), std::sin(a1)},
+                             thickness,
+                             color);
+        }
+    }
+
+    static float minimap_window_width(const MinimapWindow& window) {
+        return window.size + 16.0F;
+    }
+
+    static float minimap_window_height(const MinimapWindow& window) {
+        return window.size + 38.0F;
+    }
+
+    static constexpr float kMinimapStackGap = 12.0F;
+    static constexpr float kMinimapMargin = 16.0F;
+    static constexpr float kMinimapViewportScale = 0.26F;
+    static constexpr float kMinimapMinSize = 132.0F;
+    static constexpr float kMinimapMaxSize = 214.0F;
+
+    static bool contains_point(const glm::vec2& min, const glm::vec2& max, const glm::vec2& point) {
+        return point.x >= min.x && point.x <= max.x && point.y >= min.y && point.y <= max.y;
+    }
+
+    static void clamp_minimap_window_size(MinimapWindow& window, float height) {
+        const float max_stacked_size = std::max(96.0F, (height - kMinimapStackGap) * 0.5F - 38.0F);
+        const float max_size = std::min(kMinimapMaxSize, max_stacked_size);
+        window.size = glm::clamp(window.size, std::min(kMinimapMinSize, max_size), max_size);
+    }
+
+    void sync_minimap_stack(float width, float height) {
+        clamp_minimap_window_size(static_window_, height);
+        clamp_minimap_window_size(dynamic_window_, height);
+
+        const float stack_width = std::max(minimap_window_width(static_window_), minimap_window_width(dynamic_window_));
+        const float stack_height =
+            minimap_window_height(static_window_) + kMinimapStackGap + minimap_window_height(dynamic_window_);
+
+        static_window_.position.x = glm::clamp(static_window_.position.x, 0.0F, std::max(0.0F, width - stack_width));
+        static_window_.position.y =
+            glm::clamp(static_window_.position.y, 0.0F, std::max(0.0F, height - stack_height));
+
+        dynamic_window_.position.x = static_window_.position.x;
+        dynamic_window_.position.y =
+            static_window_.position.y + minimap_window_height(static_window_) + kMinimapStackGap;
+    }
+
+    void ensure_minimap_windows(float width, float height) {
+        if (static_window_.initialized && dynamic_window_.initialized) {
+            sync_minimap_stack(width, height);
+            return;
+        }
+
+        const float side = glm::clamp(std::min(width, height) * kMinimapViewportScale,
+                                      kMinimapMinSize,
+                                      kMinimapMaxSize);
+        static_window_.size = side;
+        dynamic_window_.size = side;
+
+        const float stack_width = std::max(minimap_window_width(static_window_), minimap_window_width(dynamic_window_));
+        static_window_.position = glm::vec2{std::max(0.0F, width - kMinimapMargin - stack_width), kMinimapMargin};
+
+        static_window_.initialized = true;
+        dynamic_window_.initialized = true;
+        sync_minimap_stack(width, height);
+    }
+
+    MinimapInteraction begin_minimap_interaction(const MinimapWindow& window,
+                                                 MinimapInteraction drag_action,
+                                                 const glm::vec2& mouse) const {
+        const float w = minimap_window_width(window);
+        const glm::vec2 min = window.position;
+        const glm::vec2 title_max = window.position + glm::vec2{w, 24.0F};
+
+        if (contains_point(min, title_max, mouse)) {
+            return drag_action;
+        }
+        return MinimapInteraction::None;
+    }
+
+    void update_minimap_window_interaction(GLFWwindow* window, float width, float height) {
+        ensure_minimap_windows(width, height);
+        if (window == nullptr || g_cursor_captured) {
+            active_minimap_interaction_ = MinimapInteraction::None;
+            previous_minimap_mouse_down_ = false;
+            return;
+        }
+
+        int window_width = 0;
+        int window_height = 0;
+        glfwGetWindowSize(window, &window_width, &window_height);
+        double raw_x = 0.0;
+        double raw_y = 0.0;
+        glfwGetCursorPos(window, &raw_x, &raw_y);
+        const float scale_x = window_width > 0 ? width / static_cast<float>(window_width) : 1.0F;
+        const float scale_y = window_height > 0 ? height / static_cast<float>(window_height) : 1.0F;
+        const glm::vec2 mouse{static_cast<float>(raw_x) * scale_x, static_cast<float>(raw_y) * scale_y};
+        const bool mouse_down = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+
+        if (!mouse_down) {
+            active_minimap_interaction_ = MinimapInteraction::None;
+            previous_minimap_mouse_down_ = false;
+            return;
+        }
+
+        if (!previous_minimap_mouse_down_) {
+            active_minimap_interaction_ =
+                begin_minimap_interaction(dynamic_window_, MinimapInteraction::DragDynamic, mouse);
+            if (active_minimap_interaction_ == MinimapInteraction::None) {
+                active_minimap_interaction_ =
+                    begin_minimap_interaction(static_window_, MinimapInteraction::DragStatic, mouse);
+            }
+
+            drag_offset_ = mouse;
+            if (active_minimap_interaction_ == MinimapInteraction::DragStatic) {
+                drag_offset_ = mouse - static_window_.position;
+            } else if (active_minimap_interaction_ == MinimapInteraction::DragDynamic) {
+                drag_offset_ = mouse - dynamic_window_.position;
+            }
+        }
+
+        if (active_minimap_interaction_ == MinimapInteraction::DragStatic) {
+            static_window_.position = mouse - drag_offset_;
+        } else if (active_minimap_interaction_ == MinimapInteraction::DragDynamic) {
+            const glm::vec2 dynamic_position = mouse - drag_offset_;
+            static_window_.position =
+                dynamic_position - glm::vec2{0.0F, minimap_window_height(static_window_) + kMinimapStackGap};
+        }
+
+        sync_minimap_stack(width, height);
+        previous_minimap_mouse_down_ = true;
+    }
+
     void add_text(float x, float y, const std::string& text, float scale, const glm::vec4& color) {
         float cursor_x = x;
         for (char ch : text) {
@@ -400,6 +703,168 @@ private:
         const float cy = height * 0.5F;
         add_rect(cx - 9.0F, cy - 1.0F, 18.0F, 2.0F, color);
         add_rect(cx - 1.0F, cy - 9.0F, 2.0F, 18.0F, color);
+    }
+
+    void ensure_static_minimap_cache(const RenderSettings& settings, const tiling::TilingPatch& patch) {
+        if (static_minimap_cache_valid_ &&
+            static_minimap_parameters_.p == settings.tiling_parameters.p &&
+            static_minimap_parameters_.q == settings.tiling_parameters.q &&
+            static_minimap_depth_ == settings.tiling_depth &&
+            static_minimap_tile_count_ == patch.tiles.size() &&
+            static_minimap_max_points_ == settings.minimap_max_points &&
+            static_minimap_max_edges_ == settings.minimap_max_edges &&
+            static_minimap_edge_segments_ == settings.minimap_edge_segments) {
+            return;
+        }
+
+        tiling::collect_minimap(patch,
+                                math::origin(),
+                                generated_map_radius(patch),
+                                math::identity_isometry(),
+                                static_minimap_points_,
+                                static_minimap_edges_,
+                                settings.minimap_max_points,
+                                settings.minimap_max_edges,
+                                settings.minimap_edge_segments);
+
+        static_minimap_parameters_ = settings.tiling_parameters;
+        static_minimap_depth_ = settings.tiling_depth;
+        static_minimap_tile_count_ = patch.tiles.size();
+        static_minimap_max_points_ = settings.minimap_max_points;
+        static_minimap_max_edges_ = settings.minimap_max_edges;
+        static_minimap_edge_segments_ = settings.minimap_edge_segments;
+        static_minimap_cache_valid_ = true;
+    }
+
+    void add_minimap_window_frame(const MinimapWindow& window, const std::string& title) {
+        const float w = minimap_window_width(window);
+        const float h = minimap_window_height(window);
+        const glm::vec2 p = window.position;
+        const glm::vec4 shadow{0.0F, 0.0F, 0.0F, 0.26F};
+        const glm::vec4 body{0.015F, 0.025F, 0.026F, 0.86F};
+        const glm::vec4 title_bar{0.08F, 0.16F, 0.18F, 0.94F};
+        const glm::vec4 border{0.64F, 0.82F, 0.88F, 0.48F};
+        const glm::vec4 title_color{0.90F, 0.96F, 0.98F, 0.92F};
+
+        add_rect(p.x + 4.0F, p.y + 5.0F, w, h, shadow);
+        add_rect(p.x, p.y, w, h, body);
+        add_rect(p.x, p.y, w, 24.0F, title_bar);
+        add_text(p.x + 10.0F, p.y + 7.0F, title, 1.35F, title_color);
+
+        add_line_segment(p, p + glm::vec2{w, 0.0F}, 1.0F, border);
+        add_line_segment(p + glm::vec2{w, 0.0F}, p + glm::vec2{w, h}, 1.0F, border);
+        add_line_segment(p + glm::vec2{w, h}, p + glm::vec2{0.0F, h}, 1.0F, border);
+        add_line_segment(p + glm::vec2{0.0F, h}, p, 1.0F, border);
+    }
+
+    void add_minimap_view(const MinimapWindow& window,
+                          const std::vector<glm::vec2>& points,
+                          const std::vector<tiling::MinimapPolyline>& edges,
+                          const glm::vec2& origin_marker,
+                          const glm::vec2& camera_marker,
+                          const glm::vec2& forward_marker,
+                          const std::string& label) {
+        add_minimap_window_frame(window, label);
+        const glm::vec2 center =
+            window.position + glm::vec2{8.0F + window.size * 0.5F, 30.0F + window.size * 0.5F};
+        const float radius = window.size * 0.5F;
+        const float scale = radius * 0.90F;
+        const glm::vec4 bg{0.02F, 0.035F, 0.035F, 0.76F};
+        const glm::vec4 rim{0.82F, 0.92F, 0.96F, 0.36F};
+        const glm::vec4 edge{0.68F, 0.82F, 0.90F, 0.43F};
+        const glm::vec4 dot{0.32F, 0.72F, 0.96F, 0.80F};
+        const glm::vec4 camera_color{0.98F, 0.92F, 0.18F, 0.96F};
+        const glm::vec4 origin_color{0.90F, 0.96F, 1.0F, 0.52F};
+
+        add_circle_filled(center, radius, 48, bg);
+        add_circle_outline(center, radius, 72, 1.5F, rim);
+
+        auto map_point = [&](const glm::vec2& p) {
+            return glm::vec2{center.x + p.x * scale, center.y - p.y * scale};
+        };
+
+        for (const tiling::MinimapPolyline& polyline : edges) {
+            if (polyline.size() < 2) {
+                continue;
+            }
+            for (std::size_t i = 0; i + 1 < polyline.size(); ++i) {
+                glm::vec2 a{};
+                glm::vec2 b{};
+                if (clip_segment_to_unit_disk(polyline[i], polyline[i + 1], a, b)) {
+                    add_line_segment(map_point(a), map_point(b), 1.1F, edge);
+                }
+            }
+        }
+
+        for (const glm::vec2& p : points) {
+            if (glm::dot(p, p) >= 1.0F) {
+                continue;
+            }
+            const glm::vec2 screen = map_point(p);
+            add_rect(screen.x - 1.5F, screen.y - 1.5F, 3.0F, 3.0F, dot);
+        }
+
+        if (glm::dot(origin_marker, origin_marker) < 1.0F) {
+            const glm::vec2 origin = map_point(origin_marker);
+            add_line_segment(origin + glm::vec2{-4.0F, 0.0F}, origin + glm::vec2{4.0F, 0.0F}, 1.0F, origin_color);
+            add_line_segment(origin + glm::vec2{0.0F, -4.0F}, origin + glm::vec2{0.0F, 4.0F}, 1.0F, origin_color);
+        }
+
+        if (glm::dot(camera_marker, camera_marker) < 1.0F) {
+            const glm::vec2 camera = map_point(camera_marker);
+            glm::vec2 clipped_a{};
+            glm::vec2 clipped_b{};
+            if (clip_segment_to_unit_disk(camera_marker, forward_marker, clipped_a, clipped_b)) {
+                add_line_segment(map_point(clipped_a), map_point(clipped_b), 2.0F, camera_color);
+            }
+            add_rect(camera.x - 3.0F, camera.y - 3.0F, 6.0F, 6.0F, camera_color);
+        }
+    }
+
+    void add_minimap(GLFWwindow* window,
+                     float width,
+                     float height,
+                     const RenderSettings& settings,
+                     const CameraState& camera,
+                     const tiling::TilingPatch& patch) {
+        if (patch.tiles.empty() || width <= 0.0F || height <= 0.0F) {
+            return;
+        }
+
+        ensure_static_minimap_cache(settings, patch);
+        update_minimap_window_interaction(window, width, height);
+
+        const math::CameraFrame global_frame = global_camera_frame(camera, patch);
+        const math::Mat3 static_view = math::identity_isometry();
+        const math::Mat3 dynamic_view = math::inverse_isometry(math::frame_to_isometry(global_frame));
+        const math::Vec3 forward_point = frame_offset_point(global_frame, 0.35);
+
+        const double dynamic_query_radius =
+            static_cast<double>(settings.minimap_radius) + patch.metrics.circumradius;
+        tiling::collect_minimap(patch,
+                                global_frame.position,
+                                dynamic_query_radius,
+                                dynamic_view,
+                                dynamic_minimap_points_,
+                                dynamic_minimap_edges_,
+                                settings.minimap_max_points,
+                                settings.minimap_max_edges,
+                                settings.minimap_edge_segments);
+
+        add_minimap_view(static_window_,
+                         static_minimap_points_,
+                         static_minimap_edges_,
+                         project_minimap_point(math::origin(), static_view),
+                         project_minimap_point(global_frame.position, static_view),
+                         project_minimap_point(forward_point, static_view),
+                         "STATIC MINIMAP");
+        add_minimap_view(dynamic_window_,
+                         dynamic_minimap_points_,
+                         dynamic_minimap_edges_,
+                         project_minimap_point(math::origin(), dynamic_view),
+                         project_minimap_point(global_frame.position, dynamic_view),
+                         project_minimap_point(forward_point, dynamic_view),
+                         "LOCAL MINIMAP");
     }
 
     void add_panel(const RenderSettings& settings,
@@ -468,6 +933,7 @@ private:
 
         line(std::string{"G GRID "} + (settings.show_grid ? "ON" : "OFF"), label);
         line(std::string{"F WIREFRAME "} + (settings.show_wireframe ? "ON" : "OFF"), label);
+        line(std::string{"M MINIMAP "} + (settings.show_minimap ? "ON" : "OFF"), label);
         line(std::string{"ESC CURSOR "} + (g_cursor_captured ? "CAPTURED" : "FREE"), label);
 
         {
@@ -488,6 +954,22 @@ private:
     GLuint program_ = 0;
     GLuint vao_ = 0;
     GLuint vbo_ = 0;
+    bool static_minimap_cache_valid_ = false;
+    math::RegularTilingParameters static_minimap_parameters_{};
+    int static_minimap_depth_ = -1;
+    std::size_t static_minimap_tile_count_ = 0;
+    int static_minimap_max_points_ = -1;
+    int static_minimap_max_edges_ = -1;
+    int static_minimap_edge_segments_ = -1;
+    std::vector<glm::vec2> static_minimap_points_;
+    std::vector<tiling::MinimapPolyline> static_minimap_edges_;
+    std::vector<glm::vec2> dynamic_minimap_points_;
+    std::vector<tiling::MinimapPolyline> dynamic_minimap_edges_;
+    MinimapWindow static_window_;
+    MinimapWindow dynamic_window_;
+    MinimapInteraction active_minimap_interaction_ = MinimapInteraction::None;
+    glm::vec2 drag_offset_{};
+    bool previous_minimap_mouse_down_ = false;
     std::vector<OverlayVertex> vertices_;
 };
 
@@ -565,6 +1047,9 @@ bool process_debug_input(GLFWwindow* window,
     if (consume_key_press(window, GLFW_KEY_F, input.f_down)) {
         settings.show_wireframe = !settings.show_wireframe;
     }
+    if (consume_key_press(window, GLFW_KEY_M, input.m_down)) {
+        settings.show_minimap = !settings.show_minimap;
+    }
     if (consume_key_press(window, GLFW_KEY_Z, input.z_down)) {
         settings.fog_density = glm::max(0.0F, settings.fog_density - 0.05F);
     }
@@ -638,10 +1123,10 @@ void process_input(GLFWwindow* window, CameraState& camera, const tiling::Tiling
     }
 
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
-        camera.zoom = glm::min(camera.zoom + dt, 3.0F);
+        camera.zoom = glm::min(camera.zoom + dt, kMaxViewZoom);
     }
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
-        camera.zoom = glm::max(camera.zoom - dt, 0.25F);
+        camera.zoom = glm::max(camera.zoom - dt, kMinViewZoom);
     }
     if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
         camera.eye_height = glm::min(camera.eye_height + kEyeLiftSpeed * dt, kMaxEyeHeight);
@@ -870,8 +1355,8 @@ math::CameraFrame global_camera_frame(const CameraState& camera, const tiling::T
 
 glm::mat4 euclidean_projection(int width, int height, float zoom) {
     const float aspect = height > 0 ? static_cast<float>(width) / static_cast<float>(height) : 1.0F;
-    const float clamped_zoom = glm::clamp(zoom, 0.25F, 3.0F);
-    const float fov_degrees = glm::clamp(74.0F / clamped_zoom, 34.0F, 100.0F);
+    const float clamped_zoom = glm::clamp(zoom, kMinViewZoom, kMaxViewZoom);
+    const float fov_degrees = glm::clamp(kBaseFovDegrees / clamped_zoom, kMinFovDegrees, kMaxFovDegrees);
     return glm::perspective(glm::radians(fov_degrees), aspect, 0.01F, 8.0F);
 }
 
@@ -970,7 +1455,8 @@ void App::run() {
 
         glfwGetFramebufferSize(window, &width, &height);
 
-        glClearColor(settings.fog_color.x, settings.fog_color.y, settings.fog_color.z, 1.0F);
+        const glm::vec3 sky_color = active_sky_color(settings);
+        glClearColor(sky_color.x, sky_color.y, sky_color.z, 1.0F);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         glEnable(GL_DEPTH_TEST);
@@ -985,6 +1471,9 @@ void App::run() {
         glUniform1i(glGetUniformLocation(shader.id(), "uProjectionModel"), 1);
         glUniform1f(glGetUniformLocation(shader.id(), "uFogDensity"), settings.fog_density);
         glUniform3fv(glGetUniformLocation(shader.id(), "uFogColor"), 1, &settings.fog_color[0]);
+        const float atmosphere = atmosphere_strength(settings.fog_density);
+        glUniform1f(glGetUniformLocation(shader.id(), "uAtmosphereStrength"), atmosphere);
+        glUniform3fv(glGetUniformLocation(shader.id(), "uAtmosphereColor"), 1, &settings.atmosphere_color[0]);
         const glm::vec3 light_dir = glm::normalize(glm::vec3{0.85F, 1.20F, 0.45F});
         glUniform3fv(glGetUniformLocation(shader.id(), "uLightDir"), 1, &light_dir[0]);
 
@@ -1001,7 +1490,7 @@ void App::run() {
             grid_mesh.draw_lines();
         }
 
-        debug_overlay.draw(width, height, settings, camera, patch);
+        debug_overlay.draw(window, width, height, settings, camera, patch);
 
         glfwSwapBuffers(window);
     }
