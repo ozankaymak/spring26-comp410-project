@@ -67,8 +67,6 @@ struct RenderSettings {
     int minimap_max_points = 1200;
     int minimap_max_edges = 3000;
     int minimap_edge_segments = 8;
-    float fog_density = 0.50F;
-    glm::vec3 fog_color{0.07F, 0.085F, 0.095F};
     glm::vec3 atmosphere_color{0.52F, 0.76F, 0.90F};
     int edge_segments = 8;
     int radial_bands = 2;
@@ -160,8 +158,6 @@ struct DebugInputState {
     bool preset8_down = false;
     bool g_down = false;
     bool f_down = false;
-    bool z_down = false;
-    bool x_down = false;
     bool c_down = false;
     bool v_down = false;
     bool b_down = false;
@@ -263,17 +259,8 @@ double generated_map_radius(const tiling::TilingPatch& patch) {
     return radius + 1.0e-6;
 }
 
-float atmosphere_strength(float fog_density) {
-    constexpr float kAtmosphereFogThreshold = 0.35F;
-    const float t = glm::clamp(fog_density / kAtmosphereFogThreshold, 0.0F, 1.0F);
-    const float eased = t * t * (3.0F - 2.0F * t);
-    return 1.0F - eased;
-}
-
 glm::vec3 active_sky_color(const RenderSettings& settings) {
-    return glm::mix(settings.fog_color,
-                    settings.atmosphere_color,
-                    atmosphere_strength(settings.fog_density));
+    return settings.atmosphere_color;
 }
 
 constexpr std::array<TilingPreset, 8> kTilingPresets{{
@@ -897,11 +884,6 @@ private:
         }
         {
             std::ostringstream text;
-            text << "Z/X FOG " << std::fixed << std::setprecision(2) << settings.fog_density;
-            line(text.str(), value);
-        }
-        {
-            std::ostringstream text;
             text << "C/V EDGE SEG " << settings.edge_segments;
             line(text.str(), value);
         }
@@ -1045,12 +1027,6 @@ bool process_debug_input(GLFWwindow* window,
     }
     if (consume_key_press(window, GLFW_KEY_M, input.m_down)) {
         settings.show_minimap = !settings.show_minimap;
-    }
-    if (consume_key_press(window, GLFW_KEY_Z, input.z_down)) {
-        settings.fog_density = glm::max(0.0F, settings.fog_density - 0.05F);
-    }
-    if (consume_key_press(window, GLFW_KEY_X, input.x_down)) {
-        settings.fog_density = glm::min(0.95F, settings.fog_density + 0.05F);
     }
     if (consume_key_press(window, GLFW_KEY_C, input.c_down)) {
         settings.edge_segments = std::max(1, settings.edge_segments - 1);
@@ -1503,10 +1479,6 @@ void App::run() {
         glm::mat4 lv = lorentz_view(camera, patch);
         glUniformMatrix4fv(glGetUniformLocation(shader.id(), "uLorentzView"), 1, GL_FALSE, &lv[0][0]);
         glUniform1i(glGetUniformLocation(shader.id(), "uProjectionModel"), 1);
-        glUniform1f(glGetUniformLocation(shader.id(), "uFogDensity"), settings.fog_density);
-        glUniform3fv(glGetUniformLocation(shader.id(), "uFogColor"), 1, &settings.fog_color[0]);
-        const float atmosphere = atmosphere_strength(settings.fog_density);
-        glUniform1f(glGetUniformLocation(shader.id(), "uAtmosphereStrength"), atmosphere);
         glUniform3fv(glGetUniformLocation(shader.id(), "uAtmosphereColor"), 1, &settings.atmosphere_color[0]);
         const glm::vec3 light_dir = glm::normalize(glm::vec3{0.85F, 1.20F, 0.45F});
         glUniform3fv(glGetUniformLocation(shader.id(), "uLightDir"), 1, &light_dir[0]);
