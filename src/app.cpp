@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -61,6 +62,8 @@ struct RenderSettings {
     int tiling_depth = kProgressDemoTilingDepth;
     bool show_grid = true;
     bool show_wireframe = false;
+    bool show_houses = true;
+    bool show_lasers = true;
     bool show_debug_ui = true;
     bool show_minimap = true;
     float minimap_radius = 4.5F;
@@ -163,6 +166,8 @@ struct DebugInputState {
     bool b_down = false;
     bool n_down = false;
     bool m_down = false;
+    bool h_down = false;
+    bool l_down = false;
 };
 
 struct OverlayVertex {
@@ -177,6 +182,11 @@ struct TilingPreset {
     math::GeometryMode mode = math::GeometryMode::Hyperbolic;
 };
 
+struct HousePropMeshes {
+    MeshData solid;
+    MeshData outline;
+};
+
 math::CameraFrame global_camera_frame(const CameraState& camera, const tiling::TilingPatch& patch);
 glm::vec4 h2_point_to_h3(const math::Vec3& point);
 void append_vertex(MeshData& mesh,
@@ -185,6 +195,11 @@ void append_vertex(MeshData& mesh,
                    const glm::vec3& color);
 MeshData make_curved_tile_mesh(const tiling::TilingPatch& patch, int radial_bands, int edge_segments);
 MeshData make_grid_mesh(const tiling::TilingPatch& patch, int edge_segments);
+HousePropMeshes make_house_prop_meshes(const tiling::TilingPatch& patch);
+MeshData make_laser_prop_mesh(const tiling::TilingPatch& patch);
+glm::mat4 h3_lorentz_boost(const glm::vec3& direction, float distance);
+glm::mat4 h3_spherical_rotation(const glm::vec3& direction, float distance);
+glm::mat4 h3_rotation_xz(float angle);
 
 glm::vec2 clamp_to_disk(const glm::vec2& p) {
     constexpr float kClipRadius = 0.9995F;
@@ -257,6 +272,301 @@ double generated_map_radius(const tiling::TilingPatch& patch) {
         radius = std::max(radius, geo_distance(origin, tile.center, patch.mode));
     }
     return radius + 1.0e-6;
+}
+
+struct LaserPath {
+    math::Vec3 start{};
+    math::Vec3 end{};
+    glm::vec3 color{};
+};
+
+constexpr std::size_t kMinimumLaserTurnCount = 3;
+
+bool finite_disk_point(const math::Vec2& p) {
+    return std::isfinite(p.x) && std::isfinite(p.y);
+}
+
+bool supports_laser_props(const tiling::TilingPatch& patch) {
+    return !patch.tiles.empty() &&
+           patch.parameters.p >= 3 &&
+           patch.parameters.q >= static_cast<int>(kMinimumLaserTurnCount);
+}
+
+std::size_t laser_turn_count(const tiling::TilingPatch& patch) {
+    return static_cast<std::size_t>(std::max(patch.parameters.q, 0));
+}
+
+bool has_tile_id(const std::vector<int>& tile_ids, int id) {
+    return std::find(tile_ids.begin(), tile_ids.end(), id) != tile_ids.end();
+}
+
+void add_unique_tile_id(std::vector<int>& tile_ids, int id) {
+    if (id >= 0 && !has_tile_id(tile_ids, id)) {
+        tile_ids.push_back(id);
+    }
+}
+
+bool route_contains_tile(const std::vector<int>& route, int tile_id) {
+    return std::find(route.begin(), route.end(), tile_id) != route.end();
+}
+
+bool tiles_are_neighbors(const tiling::TilingPatch& patch, int a, int b) {
+    if (a < 0 || a >= static_cast<int>(patch.tiles.size())) {
+        return false;
+    }
+
+    const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(a)];
+    return std::find(tile.neighbors.begin(), tile.neighbors.end(), b) != tile.neighbors.end();
+}
+
+math::Vec3 tile_vertex(const tiling::TilingPatch& patch, const tiling::Tile& tile, std::size_t vertex_index) {
+    return geo_normalize(
+        math::apply_isometry(tile.transform, patch.base_polygon_vertices[vertex_index]),
+        patch.mode);
+}
+
+bool points_coincide(const math::Vec3& a, const math::Vec3& b, math::GeometryMode mode) {
+    try {
+        return geo_distance(a, b, mode) <= 1.0e-5;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool tile_touches_vertex(const tiling::TilingPatch& patch, int tile_id, const math::Vec3& target_vertex) {
+    if (tile_id < 0 ||
+        tile_id >= static_cast<int>(patch.tiles.size()) ||
+        patch.base_polygon_vertices.empty()) {
+        return false;
+    }
+
+    const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(tile_id)];
+    for (std::size_t i = 0; i < patch.base_polygon_vertices.size(); ++i) {
+        if (points_coincide(tile_vertex(patch, tile, i), target_vertex, patch.mode)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool extend_vertex_laser_loop(const tiling::TilingPatch& patch,
+                              const math::Vec3& target_vertex,
+                              std::vector<int>& route,
+                              std::size_t turn_count) {
+    if (route.size() == turn_count) {
+        return tiles_are_neighbors(patch, route.back(), route.front());
+    }
+
+    const int current_tile = route.back();
+    if (current_tile < 0 || current_tile >= static_cast<int>(patch.tiles.size())) {
+        return false;
+    }
+
+    const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(current_tile)];
+    for (int next_tile : tile.neighbors) {
+        if (next_tile < 0 ||
+            route_contains_tile(route, next_tile) ||
+            !tile_touches_vertex(patch, next_tile, target_vertex)) {
+            continue;
+        }
+
+        route.push_back(next_tile);
+        if (extend_vertex_laser_loop(patch, target_vertex, route, turn_count)) {
+            return true;
+        }
+        route.pop_back();
+    }
+
+    return false;
+}
+
+int best_tile_in_disk_direction(const tiling::TilingPatch& patch, const glm::dvec2& direction) {
+    if (patch.tiles.size() <= 1) {
+        return -1;
+    }
+
+    const double direction_length = glm::length(direction);
+    if (direction_length <= 1.0e-9) {
+        return -1;
+    }
+
+    const glm::dvec2 unit_direction = direction / direction_length;
+    double best_score = -std::numeric_limits<double>::infinity();
+    int best_id = -1;
+
+    for (const tiling::Tile& tile : patch.tiles) {
+        if (tile.id == 0) {
+            continue;
+        }
+
+        math::Vec2 projected{};
+        try {
+            projected = geo_project_conformal_disk(tile.center, patch.mode);
+        } catch (const std::exception&) {
+            continue;
+        }
+        if (!finite_disk_point(projected)) {
+            continue;
+        }
+
+        const glm::dvec2 p{projected.x, projected.y};
+        const double length = glm::length(p);
+        if (length <= 1.0e-8) {
+            continue;
+        }
+
+        const double score = glm::dot(p / length, unit_direction) + 0.30 * length;
+        if (score > best_score) {
+            best_score = score;
+            best_id = tile.id;
+        }
+    }
+
+    return best_id;
+}
+
+std::vector<int> choose_showcase_tiles(const tiling::TilingPatch& patch, std::size_t max_count) {
+    std::vector<int> selected;
+    if (patch.tiles.empty() || max_count == 0) {
+        return selected;
+    }
+
+    const tiling::Tile& root = patch.tiles.front();
+    for (int neighbor_id : root.neighbors) {
+        add_unique_tile_id(selected, neighbor_id);
+        if (selected.size() >= max_count) {
+            return selected;
+        }
+    }
+
+    constexpr std::array<glm::dvec2, 6> kDirections{{
+        glm::dvec2{0.0, 1.0},
+        glm::dvec2{1.0, 0.0},
+        glm::dvec2{0.0, -1.0},
+        glm::dvec2{-1.0, 0.0},
+        glm::dvec2{0.72, 0.72},
+        glm::dvec2{-0.72, 0.72},
+    }};
+
+    for (const glm::dvec2& direction : kDirections) {
+        add_unique_tile_id(selected, best_tile_in_disk_direction(patch, direction));
+        if (selected.size() >= max_count) {
+            return selected;
+        }
+    }
+
+    for (std::size_t i = 1; i < patch.tiles.size() && selected.size() < max_count; ++i) {
+        add_unique_tile_id(selected, patch.tiles[i].id);
+    }
+
+    return selected;
+}
+
+std::vector<int> choose_laser_anchor_tiles(const tiling::TilingPatch& patch) {
+    std::vector<int> anchors;
+    if (!supports_laser_props(patch) || patch.tiles.empty() || patch.base_polygon_vertices.empty()) {
+        return anchors;
+    }
+
+    const std::size_t turn_count = laser_turn_count(patch);
+    if (turn_count < kMinimumLaserTurnCount) {
+        return anchors;
+    }
+
+    // A laser loop around a tiling vertex has q one-tile segments. Consecutive
+    // tiles meet at the same regular p-gon vertex, so each turn is 360 / p
+    // degrees: {4,6} gives six 90-degree turns and {4,5} gives five.
+    const tiling::Tile& root = patch.tiles.front();
+    for (std::size_t vertex_index = 0; vertex_index < patch.base_polygon_vertices.size(); ++vertex_index) {
+        anchors.assign(1U, 0);
+        const math::Vec3 target_vertex = tile_vertex(patch, root, vertex_index);
+        if (extend_vertex_laser_loop(patch, target_vertex, anchors, turn_count)) {
+            return anchors;
+        }
+    }
+
+    anchors.clear();
+    return anchors;
+}
+
+std::vector<LaserPath> make_laser_paths(const tiling::TilingPatch& patch) {
+    std::vector<LaserPath> paths;
+    if (!supports_laser_props(patch)) {
+        return paths;
+    }
+
+    const std::vector<int> anchors = choose_laser_anchor_tiles(patch);
+    const std::size_t turn_count = laser_turn_count(patch);
+    if (anchors.size() < turn_count) {
+        return paths;
+    }
+
+    constexpr glm::vec3 kLaserColor{1.00F, 0.24F, 0.58F};
+
+    const std::size_t path_count = std::min(anchors.size(), turn_count);
+    for (std::size_t i = 0; i < path_count; ++i) {
+        const int a = anchors[i];
+        const int b = anchors[(i + 1) % path_count];
+        if (a < 0 || b < 0 || a == b ||
+            a >= static_cast<int>(patch.tiles.size()) ||
+            b >= static_cast<int>(patch.tiles.size())) {
+            continue;
+        }
+
+        double distance = 0.0;
+        try {
+            distance = geo_distance(patch.tiles[static_cast<std::size_t>(a)].center,
+                                    patch.tiles[static_cast<std::size_t>(b)].center,
+                                    patch.mode);
+        } catch (const std::exception&) {
+            continue;
+        }
+        if (!std::isfinite(distance) || distance <= 1.0e-5 ||
+            (geo_is_spherical(patch.mode) && distance >= 3.12)) {
+            continue;
+        }
+
+        paths.push_back(LaserPath{
+            patch.tiles[static_cast<std::size_t>(a)].center,
+            patch.tiles[static_cast<std::size_t>(b)].center,
+            kLaserColor,
+        });
+    }
+
+    return paths;
+}
+
+void collect_laser_minimap_edges(const tiling::TilingPatch& patch,
+                                 const math::Mat3& minimap_view,
+                                 std::vector<tiling::MinimapPolyline>& edges) {
+    edges.clear();
+    constexpr int kSegments = 40;
+    const std::vector<LaserPath> paths = make_laser_paths(patch);
+    if (paths.empty()) {
+        return;
+    }
+
+    tiling::MinimapPolyline polyline;
+    polyline.reserve(paths.size() * static_cast<std::size_t>(kSegments) + 1U);
+
+    try {
+        for (const LaserPath& path : paths) {
+            for (int segment = 0; segment <= kSegments; ++segment) {
+                if (!polyline.empty() && segment == 0) {
+                    continue;
+                }
+                const double t = static_cast<double>(segment) / static_cast<double>(kSegments);
+                const math::Vec3 point = geo_geodesic_lerp(path.start, path.end, t, patch.mode);
+                polyline.push_back(project_minimap_point(point, minimap_view, patch.mode));
+            }
+        }
+    } catch (const std::exception&) {
+        polyline.clear();
+    }
+
+    if (polyline.size() >= 2) {
+        edges.push_back(polyline);
+    }
 }
 
 glm::vec3 active_sky_color(const RenderSettings& settings) {
@@ -726,9 +1036,11 @@ private:
     void add_minimap_view(const MinimapWindow& window,
                           const std::vector<glm::vec2>& points,
                           const std::vector<tiling::MinimapPolyline>& edges,
+                          const std::vector<tiling::MinimapPolyline>& laser_edges,
                           const glm::vec2& origin_marker,
                           const glm::vec2& camera_marker,
                           const glm::vec2& forward_marker,
+                          bool camera_local_axes,
                           const std::string& label) {
         add_minimap_window_frame(window, label);
         const glm::vec2 center =
@@ -738,6 +1050,8 @@ private:
         const glm::vec4 bg{0.02F, 0.035F, 0.035F, 0.76F};
         const glm::vec4 rim{0.82F, 0.92F, 0.96F, 0.36F};
         const glm::vec4 edge{0.68F, 0.82F, 0.90F, 0.43F};
+        const glm::vec4 laser_glow{1.00F, 0.20F, 0.56F, 0.58F};
+        const glm::vec4 laser_core{1.00F, 0.96F, 0.98F, 0.88F};
         const glm::vec4 dot{0.32F, 0.72F, 0.96F, 0.80F};
         const glm::vec4 camera_color{0.98F, 0.92F, 0.18F, 0.96F};
         const glm::vec4 origin_color{0.90F, 0.96F, 1.0F, 0.52F};
@@ -746,7 +1060,8 @@ private:
         add_circle_outline(center, radius, 72, 1.5F, rim);
 
         auto map_point = [&](const glm::vec2& p) {
-            return glm::vec2{center.x + p.x * scale, center.y - p.y * scale};
+            const glm::vec2 oriented = camera_local_axes ? glm::vec2{p.y, p.x} : p;
+            return glm::vec2{center.x + oriented.x * scale, center.y - oriented.y * scale};
         };
 
         for (const tiling::MinimapPolyline& polyline : edges) {
@@ -758,6 +1073,20 @@ private:
                 glm::vec2 b{};
                 if (clip_segment_to_unit_disk(polyline[i], polyline[i + 1], a, b)) {
                     add_line_segment(map_point(a), map_point(b), 1.1F, edge);
+                }
+            }
+        }
+
+        for (const tiling::MinimapPolyline& polyline : laser_edges) {
+            if (polyline.size() < 2) {
+                continue;
+            }
+            for (std::size_t i = 0; i + 1 < polyline.size(); ++i) {
+                glm::vec2 a{};
+                glm::vec2 b{};
+                if (clip_segment_to_unit_disk(polyline[i], polyline[i + 1], a, b)) {
+                    add_line_segment(map_point(a), map_point(b), 3.6F, laser_glow);
+                    add_line_segment(map_point(a), map_point(b), 1.3F, laser_core);
                 }
             }
         }
@@ -817,19 +1146,31 @@ private:
                                 settings.minimap_max_edges,
                                 settings.minimap_edge_segments);
 
+        if (settings.show_lasers) {
+            collect_laser_minimap_edges(patch, static_view, static_laser_minimap_edges_);
+            collect_laser_minimap_edges(patch, dynamic_view, dynamic_laser_minimap_edges_);
+        } else {
+            static_laser_minimap_edges_.clear();
+            dynamic_laser_minimap_edges_.clear();
+        }
+
         add_minimap_view(static_window_,
                          static_minimap_points_,
                          static_minimap_edges_,
+                         static_laser_minimap_edges_,
                          project_minimap_point(math::origin(), static_view, patch.mode),
                          project_minimap_point(global_frame.position, static_view, patch.mode),
                          project_minimap_point(forward_point, static_view, patch.mode),
+                         false,
                          "STATIC MINIMAP");
         add_minimap_view(dynamic_window_,
                          dynamic_minimap_points_,
                          dynamic_minimap_edges_,
+                         dynamic_laser_minimap_edges_,
                          project_minimap_point(math::origin(), dynamic_view, patch.mode),
                          project_minimap_point(global_frame.position, dynamic_view, patch.mode),
                          project_minimap_point(forward_point, dynamic_view, patch.mode),
+                         true,
                          "LOCAL MINIMAP");
     }
 
@@ -840,7 +1181,7 @@ private:
         const double origin_distance = geo_distance(math::origin(), global_frame.position, patch.mode);
         const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(camera.current_tile_id)];
 
-        add_rect(10.0F, 10.0F, 392.0F, 360.0F, glm::vec4{0.02F, 0.03F, 0.04F, 0.78F});
+        add_rect(10.0F, 10.0F, 392.0F, 398.0F, glm::vec4{0.02F, 0.03F, 0.04F, 0.78F});
         add_rect(10.0F, 10.0F, 392.0F, 30.0F, glm::vec4{0.12F, 0.18F, 0.20F, 0.92F});
         add_text(20.0F, 19.0F, "DEBUG UI", 2.0F, glm::vec4{0.94F, 0.98F, 1.0F, 0.98F});
 
@@ -896,6 +1237,12 @@ private:
         line(std::string{"G GRID "} + (settings.show_grid ? "ON" : "OFF"), label);
         line(std::string{"F WIREFRAME "} + (settings.show_wireframe ? "ON" : "OFF"), label);
         line(std::string{"M MINIMAP "} + (settings.show_minimap ? "ON" : "OFF"), label);
+        line(std::string{"H HOUSES "} + (settings.show_houses ? "ON" : "OFF"), label);
+        if (supports_laser_props(patch)) {
+            line(std::string{"L LASERS "} + (settings.show_lasers ? "ON" : "OFF"), label);
+        } else {
+            line("L LASERS N/A", label);
+        }
         line(std::string{"ESC CURSOR "} + (g_cursor_captured ? "CAPTURED" : "FREE"), label);
 
         {
@@ -910,7 +1257,7 @@ private:
             line(text.str(), value);
         }
 
-        add_text(22.0F, 342.0F, "F1 HIDE PANEL", 2.0F, glm::vec4{0.58F, 0.70F, 0.74F, 0.95F});
+        add_text(22.0F, 380.0F, "F1 HIDE PANEL", 2.0F, glm::vec4{0.58F, 0.70F, 0.74F, 0.95F});
     }
 
     GLuint program_ = 0;
@@ -927,6 +1274,8 @@ private:
     std::vector<tiling::MinimapPolyline> static_minimap_edges_;
     std::vector<glm::vec2> dynamic_minimap_points_;
     std::vector<tiling::MinimapPolyline> dynamic_minimap_edges_;
+    std::vector<tiling::MinimapPolyline> static_laser_minimap_edges_;
+    std::vector<tiling::MinimapPolyline> dynamic_laser_minimap_edges_;
     MinimapWindow static_window_;
     MinimapWindow dynamic_window_;
     std::vector<OverlayVertex> vertices_;
@@ -949,16 +1298,31 @@ bool consume_key_press(GLFWwindow* window, int key, bool& was_down) {
     return pressed;
 }
 
+void upload_optional_mesh(Mesh& mesh, const MeshData& data) {
+    if (data.vertices.empty() || data.indices.empty()) {
+        mesh.reset();
+        return;
+    }
+    mesh.upload(data);
+}
+
 void rebuild_tiling(RenderSettings& settings,
                     tiling::TilingPatch& patch,
                     Mesh& center_mesh,
                     Mesh& grid_mesh,
+                    Mesh& house_solid_mesh,
+                    Mesh& house_outline_mesh,
+                    Mesh& laser_mesh,
                     CameraState& camera) {
     settings.tiling_depth = geo_tiling_depth(settings.geometry_mode);
     patch = tiling::generate_tiling_patch(settings.tiling_parameters, settings.tiling_depth, 1.0e-6,
                                           settings.geometry_mode);
     center_mesh.upload(make_curved_tile_mesh(patch, settings.radial_bands, settings.edge_segments));
     grid_mesh.upload(make_grid_mesh(patch, settings.edge_segments));
+    const HousePropMeshes house_meshes = make_house_prop_meshes(patch);
+    upload_optional_mesh(house_solid_mesh, house_meshes.solid);
+    upload_optional_mesh(house_outline_mesh, house_meshes.outline);
+    upload_optional_mesh(laser_mesh, make_laser_prop_mesh(patch));
     camera.frame = display_aligned_frame(settings.geometry_mode);
     camera.pitch = -0.28F;
     camera.eye_height = 0.32F;
@@ -988,6 +1352,9 @@ bool process_debug_input(GLFWwindow* window,
                          tiling::TilingPatch& patch,
                          Mesh& center_mesh,
                          Mesh& grid_mesh,
+                         Mesh& house_solid_mesh,
+                         Mesh& house_outline_mesh,
+                         Mesh& laser_mesh,
                          CameraState& camera) {
     bool rebuild_meshes = false;
     bool rebuild_patch = false;
@@ -1028,6 +1395,12 @@ bool process_debug_input(GLFWwindow* window,
     if (consume_key_press(window, GLFW_KEY_M, input.m_down)) {
         settings.show_minimap = !settings.show_minimap;
     }
+    if (consume_key_press(window, GLFW_KEY_H, input.h_down)) {
+        settings.show_houses = !settings.show_houses;
+    }
+    if (consume_key_press(window, GLFW_KEY_L, input.l_down)) {
+        settings.show_lasers = !settings.show_lasers;
+    }
     if (consume_key_press(window, GLFW_KEY_C, input.c_down)) {
         settings.edge_segments = std::max(1, settings.edge_segments - 1);
         rebuild_meshes = true;
@@ -1046,7 +1419,14 @@ bool process_debug_input(GLFWwindow* window,
     }
 
     if (rebuild_patch) {
-        rebuild_tiling(settings, patch, center_mesh, grid_mesh, camera);
+        rebuild_tiling(settings,
+                       patch,
+                       center_mesh,
+                       grid_mesh,
+                       house_solid_mesh,
+                       house_outline_mesh,
+                       laser_mesh,
+                       camera);
         return true;
     }
 
@@ -1318,6 +1698,17 @@ glm::mat4 h3_spherical_rotation(const glm::vec3& direction, float distance) {
     return matrix;
 }
 
+glm::mat4 h3_rotation_xz(float angle) {
+    const float c = std::cos(angle);
+    const float s = std::sin(angle);
+    glm::mat4 matrix{1.0F};
+    matrix[0][0] = c;
+    matrix[2][0] = -s;
+    matrix[0][2] = s;
+    matrix[2][2] = c;
+    return matrix;
+}
+
 glm::mat4 h3_rotation_yz(float angle) {
     const float c = std::cos(angle);
     const float s = std::sin(angle);
@@ -1346,6 +1737,286 @@ glm::mat4 h3_frame_from_h2_frame(const math::CameraFrame& frame) {
     matrix[2] = h2_tangent_to_h3(frame.forward);
     matrix[3] = h2_point_to_h3(frame.position);
     return matrix;
+}
+
+struct LocalPropPoint {
+    float x = 0.0F;
+    float y = 0.0F;
+    float z = 0.0F;
+};
+
+glm::mat4 h3_vertical_motion(float distance, math::GeometryMode mode) {
+    return geo_is_spherical(mode)
+               ? h3_spherical_rotation(glm::vec3{0.0F, 1.0F, 0.0F}, distance)
+               : h3_lorentz_boost(glm::vec3{0.0F, 1.0F, 0.0F}, distance);
+}
+
+glm::vec4 embed_local_prop_point(const LocalPropPoint& p, math::GeometryMode mode) {
+    glm::mat4 transform{1.0F};
+    transform = transform * (geo_is_spherical(mode)
+                                 ? h3_spherical_rotation(glm::vec3{1.0F, 0.0F, 0.0F}, p.x)
+                                 : h3_lorentz_boost(glm::vec3{1.0F, 0.0F, 0.0F}, p.x));
+    transform = transform * (geo_is_spherical(mode)
+                                 ? h3_spherical_rotation(glm::vec3{0.0F, 0.0F, 1.0F}, p.z)
+                                 : h3_lorentz_boost(glm::vec3{0.0F, 0.0F, 1.0F}, p.z));
+    transform = transform * h3_vertical_motion(p.y, mode);
+    return transform * glm::vec4{0.0F, 0.0F, 0.0F, 1.0F};
+}
+
+glm::vec3 local_face_normal(const LocalPropPoint& a,
+                            const LocalPropPoint& b,
+                            const LocalPropPoint& c) {
+    const glm::vec3 ab{b.x - a.x, b.y - a.y, b.z - a.z};
+    const glm::vec3 ac{c.x - a.x, c.y - a.y, c.z - a.z};
+    const glm::vec3 normal = glm::cross(ab, ac);
+    const float length = glm::length(normal);
+    if (length <= 1.0e-6F) {
+        return glm::vec3{0.0F, 1.0F, 0.0F};
+    }
+    return normal / length;
+}
+
+glm::vec3 transformed_normal(const glm::mat4& model, const glm::vec3& normal) {
+    const glm::vec3 transformed = glm::mat3(model) * normal;
+    const float length = glm::length(transformed);
+    if (length <= 1.0e-6F) {
+        return glm::vec3{0.0F, 1.0F, 0.0F};
+    }
+    return transformed / length;
+}
+
+void append_prop_triangle(MeshData& mesh,
+                          const glm::mat4& model,
+                          const LocalPropPoint& a,
+                          const LocalPropPoint& b,
+                          const LocalPropPoint& c,
+                          const glm::vec3& color,
+                          math::GeometryMode mode) {
+    const unsigned int base = static_cast<unsigned int>(mesh.vertices.size());
+    const glm::vec3 normal = transformed_normal(model, local_face_normal(a, b, c));
+
+    append_vertex(mesh, model * embed_local_prop_point(a, mode), normal, color);
+    append_vertex(mesh, model * embed_local_prop_point(b, mode), normal, color);
+    append_vertex(mesh, model * embed_local_prop_point(c, mode), normal, color);
+
+    mesh.indices.push_back(base + 0U);
+    mesh.indices.push_back(base + 1U);
+    mesh.indices.push_back(base + 2U);
+}
+
+void append_prop_quad(MeshData& mesh,
+                      const glm::mat4& model,
+                      const LocalPropPoint& a,
+                      const LocalPropPoint& b,
+                      const LocalPropPoint& c,
+                      const LocalPropPoint& d,
+                      const glm::vec3& color,
+                      math::GeometryMode mode) {
+    append_prop_triangle(mesh, model, a, b, c, color, mode);
+    append_prop_triangle(mesh, model, a, c, d, color, mode);
+}
+
+void append_prop_line(MeshData& mesh,
+                      const glm::mat4& model,
+                      const LocalPropPoint& a,
+                      const LocalPropPoint& b,
+                      const glm::vec3& color,
+                      math::GeometryMode mode) {
+    const unsigned int base = static_cast<unsigned int>(mesh.vertices.size());
+    const glm::vec3 normal = transformed_normal(model, glm::vec3{0.0F, 1.0F, 0.0F});
+
+    append_vertex(mesh, model * embed_local_prop_point(a, mode), normal, color);
+    append_vertex(mesh, model * embed_local_prop_point(b, mode), normal, color);
+
+    mesh.indices.push_back(base + 0U);
+    mesh.indices.push_back(base + 1U);
+}
+
+void append_house(MeshData& solid,
+                  MeshData& outline,
+                  const glm::mat4& model,
+                  const glm::vec3& tint,
+                  math::GeometryMode mode) {
+    const glm::vec3 wall_color = tint * glm::vec3{0.86F, 0.82F, 0.70F};
+    const glm::vec3 roof_color = tint * glm::vec3{0.90F, 0.34F, 0.22F};
+    const glm::vec3 trim_color = tint * glm::vec3{0.26F, 0.20F, 0.17F};
+    const glm::vec3 door_color = tint * glm::vec3{0.16F, 0.27F, 0.42F};
+    const glm::vec3 chimney_color = tint * glm::vec3{0.32F, 0.25F, 0.23F};
+    const glm::vec3 line_color{0.06F, 0.07F, 0.07F};
+
+    constexpr float w = 0.16F;
+    constexpr float d = 0.12F;
+    constexpr float h = 0.18F;
+    constexpr float peak = 0.32F;
+    constexpr float door_left = -0.065F;
+    constexpr float door_right = 0.018F;
+    constexpr float door_h = 0.11F;
+    constexpr float chimney_w0 = -0.070F;
+    constexpr float chimney_w1 = -0.025F;
+    constexpr float chimney_z0 = -0.012F;
+    constexpr float chimney_z1 = 0.034F;
+    constexpr float chimney_y0 = 0.22F;
+    constexpr float chimney_y1 = 0.34F;
+
+    const LocalPropPoint fbl{-w, 0.0F, d};
+    const LocalPropPoint fbr{w, 0.0F, d};
+    const LocalPropPoint ftr{w, h, d};
+    const LocalPropPoint ftl{-w, h, d};
+    const LocalPropPoint frp{0.0F, peak, d};
+    const LocalPropPoint dbl{door_left, 0.0F, d};
+    const LocalPropPoint dbr{door_right, 0.0F, d};
+    const LocalPropPoint dtr{door_right, door_h, d};
+    const LocalPropPoint dtl{door_left, door_h, d};
+
+    const LocalPropPoint bbl{-w, 0.0F, -d};
+    const LocalPropPoint bbr{w, 0.0F, -d};
+    const LocalPropPoint btr{w, h, -d};
+    const LocalPropPoint btl{-w, h, -d};
+    const LocalPropPoint brp{0.0F, peak, -d};
+
+    append_prop_quad(solid, model, fbl, dbl, dtl, ftl, wall_color, mode);
+    append_prop_quad(solid, model, dbr, fbr, ftr, dtr, wall_color, mode);
+    append_prop_quad(solid, model, dtl, dtr, ftr, ftl, wall_color, mode);
+    append_prop_triangle(solid, model, ftl, ftr, frp, roof_color, mode);
+    append_prop_quad(solid, model, bbr, bbl, btl, btr, wall_color, mode);
+    append_prop_triangle(solid, model, btr, btl, brp, roof_color, mode);
+
+    append_prop_quad(solid, model, bbl, fbl, ftl, btl, wall_color, mode);
+    append_prop_quad(solid, model, fbr, bbr, btr, ftr, wall_color, mode);
+    append_prop_quad(solid, model, ftl, frp, brp, btl, roof_color, mode);
+    append_prop_quad(solid, model, frp, ftr, btr, brp, roof_color, mode);
+    append_prop_quad(solid, model, bbl, bbr, fbr, fbl, trim_color, mode);
+    append_prop_quad(solid, model, dbl, dbr, dtr, dtl, door_color, mode);
+
+    const LocalPropPoint chimney_fbl{chimney_w0, chimney_y0, chimney_z1};
+    const LocalPropPoint chimney_fbr{chimney_w1, chimney_y0, chimney_z1};
+    const LocalPropPoint chimney_ftr{chimney_w1, chimney_y1, chimney_z1};
+    const LocalPropPoint chimney_ftl{chimney_w0, chimney_y1, chimney_z1};
+    const LocalPropPoint chimney_bbl{chimney_w0, chimney_y0, chimney_z0};
+    const LocalPropPoint chimney_bbr{chimney_w1, chimney_y0, chimney_z0};
+    const LocalPropPoint chimney_btr{chimney_w1, chimney_y1, chimney_z0};
+    const LocalPropPoint chimney_btl{chimney_w0, chimney_y1, chimney_z0};
+
+    append_prop_quad(solid, model, chimney_fbl, chimney_fbr, chimney_ftr, chimney_ftl, chimney_color, mode);
+    append_prop_quad(solid, model, chimney_bbr, chimney_bbl, chimney_btl, chimney_btr, chimney_color, mode);
+    append_prop_quad(solid, model, chimney_bbl, chimney_fbl, chimney_ftl, chimney_btl, chimney_color, mode);
+    append_prop_quad(solid, model, chimney_fbr, chimney_bbr, chimney_btr, chimney_ftr, chimney_color, mode);
+    append_prop_quad(solid, model, chimney_ftl, chimney_ftr, chimney_btr, chimney_btl, chimney_color, mode);
+
+    append_prop_line(outline, model, fbl, fbr, line_color, mode);
+    append_prop_line(outline, model, fbr, ftr, line_color, mode);
+    append_prop_line(outline, model, ftr, frp, line_color, mode);
+    append_prop_line(outline, model, frp, ftl, line_color, mode);
+    append_prop_line(outline, model, ftl, fbl, line_color, mode);
+    append_prop_line(outline, model, bbl, bbr, line_color, mode);
+    append_prop_line(outline, model, bbr, btr, line_color, mode);
+    append_prop_line(outline, model, btr, brp, line_color, mode);
+    append_prop_line(outline, model, brp, btl, line_color, mode);
+    append_prop_line(outline, model, btl, bbl, line_color, mode);
+    append_prop_line(outline, model, fbl, bbl, line_color, mode);
+    append_prop_line(outline, model, fbr, bbr, line_color, mode);
+    append_prop_line(outline, model, ftl, btl, line_color, mode);
+    append_prop_line(outline, model, ftr, btr, line_color, mode);
+    append_prop_line(outline, model, frp, brp, line_color, mode);
+    append_prop_line(outline, model, dbl, dbr, line_color, mode);
+    append_prop_line(outline, model, dbr, dtr, line_color, mode);
+    append_prop_line(outline, model, dtr, dtl, line_color, mode);
+    append_prop_line(outline, model, dtl, dbl, line_color, mode);
+    append_prop_line(outline, model, chimney_fbl, chimney_fbr, line_color, mode);
+    append_prop_line(outline, model, chimney_fbr, chimney_ftr, line_color, mode);
+    append_prop_line(outline, model, chimney_ftr, chimney_ftl, line_color, mode);
+    append_prop_line(outline, model, chimney_ftl, chimney_fbl, line_color, mode);
+    append_prop_line(outline, model, chimney_ftl, chimney_btl, line_color, mode);
+    append_prop_line(outline, model, chimney_ftr, chimney_btr, line_color, mode);
+    append_prop_line(outline, model, chimney_btr, chimney_btl, line_color, mode);
+    append_prop_line(outline, model, chimney_btl, chimney_ftl, line_color, mode);
+}
+
+glm::vec3 tint_for_prop(std::size_t index) {
+    constexpr std::array<glm::vec3, 6> kTints{{
+        glm::vec3{1.00F, 0.96F, 0.92F},
+        glm::vec3{0.92F, 1.00F, 0.95F},
+        glm::vec3{0.90F, 0.96F, 1.00F},
+        glm::vec3{1.00F, 0.93F, 0.98F},
+        glm::vec3{0.98F, 0.96F, 0.86F},
+        glm::vec3{0.94F, 0.92F, 1.00F},
+    }};
+    return kTints[index % kTints.size()];
+}
+
+float yaw_toward_origin(const tiling::Tile& tile, math::GeometryMode mode) {
+    const math::Vec2 projected = geo_project_conformal_disk(tile.center, mode);
+    if (!finite_disk_point(projected)) {
+        return 0.0F;
+    }
+
+    const glm::vec2 to_origin{
+        static_cast<float>(-projected.y),
+        static_cast<float>(-projected.x),
+    };
+    if (glm::length(to_origin) <= 1.0e-6F) {
+        return 0.0F;
+    }
+
+    return std::atan2(-to_origin.x, to_origin.y);
+}
+
+glm::mat4 tile_prop_model(const tiling::Tile& tile, math::GeometryMode mode, float yaw) {
+    const math::CameraFrame frame = tiling::global_frame_from_tile(math::canonical_frame(), tile, mode);
+    return h3_frame_from_h2_frame(frame) * h3_rotation_xz(yaw);
+}
+
+HousePropMeshes make_house_prop_meshes(const tiling::TilingPatch& patch) {
+    HousePropMeshes meshes;
+    const std::vector<int> tile_ids = choose_showcase_tiles(patch, 8);
+    const std::vector<int> laser_tile_ids = choose_laser_anchor_tiles(patch);
+
+    for (std::size_t i = 0; i < tile_ids.size(); ++i) {
+        const int tile_id = tile_ids[i];
+        if (tile_id < 0 || tile_id >= static_cast<int>(patch.tiles.size())) {
+            continue;
+        }
+        if (has_tile_id(laser_tile_ids, tile_id)) {
+            continue;
+        }
+
+        const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(tile_id)];
+        const float yaw = yaw_toward_origin(tile, patch.mode) + 0.16F * static_cast<float>(i % 3);
+        append_house(meshes.solid,
+                     meshes.outline,
+                     tile_prop_model(tile, patch.mode, yaw),
+                     tint_for_prop(i),
+                     patch.mode);
+    }
+
+    return meshes;
+}
+
+void append_laser_line_vertex(MeshData& mesh,
+                              const math::Vec3& point,
+                              const glm::vec3& color,
+                              math::GeometryMode) {
+    append_vertex(mesh, h2_point_to_h3(point), glm::vec3{0.0F, 1.0F, 0.0F}, color);
+}
+
+void append_laser_path(MeshData& mesh, const LaserPath& path, math::GeometryMode mode) {
+    const glm::vec3 core_color = glm::mix(path.color, glm::vec3{1.0F, 1.0F, 1.0F}, 0.68F);
+    const unsigned int base = static_cast<unsigned int>(mesh.vertices.size());
+    append_laser_line_vertex(mesh, path.start, core_color, mode);
+    append_laser_line_vertex(mesh, path.end, core_color, mode);
+    mesh.indices.push_back(base);
+    mesh.indices.push_back(base + 1U);
+}
+
+MeshData make_laser_prop_mesh(const tiling::TilingPatch& patch) {
+    MeshData mesh;
+    const std::vector<LaserPath> paths = make_laser_paths(patch);
+
+    for (const LaserPath& path : paths) {
+        append_laser_path(mesh, path, patch.mode);
+    }
+
+    return mesh;
 }
 
 math::CameraFrame global_camera_frame(const CameraState& camera, const tiling::TilingPatch& patch) {
@@ -1444,6 +2115,13 @@ void App::run() {
     center_mesh.upload(make_curved_tile_mesh(patch, settings.radial_bands, settings.edge_segments));
     Mesh grid_mesh;
     grid_mesh.upload(make_grid_mesh(patch, settings.edge_segments));
+    const HousePropMeshes house_meshes = make_house_prop_meshes(patch);
+    Mesh house_solid_mesh;
+    upload_optional_mesh(house_solid_mesh, house_meshes.solid);
+    Mesh house_outline_mesh;
+    upload_optional_mesh(house_outline_mesh, house_meshes.outline);
+    Mesh laser_mesh;
+    upload_optional_mesh(laser_mesh, make_laser_prop_mesh(patch));
 
     update_window_title(window, camera, patch);
     float title_update_accumulator = 0.0F;
@@ -1456,7 +2134,16 @@ void App::run() {
 
         glfwPollEvents();
         process_input(window, camera, patch, dt);
-        process_debug_input(window, settings, debug_input, patch, center_mesh, grid_mesh, camera);
+        process_debug_input(window,
+                            settings,
+                            debug_input,
+                            patch,
+                            center_mesh,
+                            grid_mesh,
+                            house_solid_mesh,
+                            house_outline_mesh,
+                            laser_mesh,
+                            camera);
         title_update_accumulator += dt;
         if (title_update_accumulator >= 0.25F) {
             update_window_title(window, camera, patch);
@@ -1494,6 +2181,9 @@ void App::run() {
             glPolygonOffset(1.0f, 1.0f);
             glUniform1f(depth_bias_loc, 0.0f);
             center_mesh.draw();
+            if (settings.show_houses) {
+                house_solid_mesh.draw();
+            }
             glDisable(GL_POLYGON_OFFSET_FILL);
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             if (settings.show_grid) {
@@ -1503,6 +2193,20 @@ void App::run() {
                 // just in front of the tile fill instead.
                 glUniform1f(depth_bias_loc, 0.0015f);
                 grid_mesh.draw_lines();
+                glUniform1f(depth_bias_loc, 0.0f);
+            }
+            if (settings.show_houses) {
+                glUniform1f(depth_bias_loc, 0.0008f);
+                glLineWidth(1.5f);
+                house_outline_mesh.draw_lines();
+                glLineWidth(1.0f);
+                glUniform1f(depth_bias_loc, 0.0f);
+            }
+            if (settings.show_lasers) {
+                glUniform1f(depth_bias_loc, 0.0012f);
+                glLineWidth(4.0f);
+                laser_mesh.draw_lines();
+                glLineWidth(1.0f);
                 glUniform1f(depth_bias_loc, 0.0f);
             }
         };

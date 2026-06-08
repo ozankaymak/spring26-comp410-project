@@ -197,6 +197,134 @@ void test_corner_tile_count_matches_q() {
             "{3,7} has seven triangles around an interior corner");
 }
 
+bool route_contains_tile(const std::vector<int>& route, int tile_id) {
+    return std::find(route.begin(), route.end(), tile_id) != route.end();
+}
+
+bool tiles_are_neighbors(const hyper::tiling::TilingPatch& patch, int a, int b) {
+    if (a < 0 || a >= static_cast<int>(patch.tiles.size())) {
+        return false;
+    }
+
+    const hyper::tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(a)];
+    return std::find(tile.neighbors.begin(), tile.neighbors.end(), b) != tile.neighbors.end();
+}
+
+double geo_distance(const hyper::math::Vec3& a,
+                    const hyper::math::Vec3& b,
+                    hyper::math::GeometryMode mode) {
+    return mode == hyper::math::GeometryMode::Spherical ? hyper::math::sphere::intrinsic_distance(a, b)
+                                                        : hyper::math::intrinsic_distance(a, b);
+}
+
+hyper::math::Vec3 geo_normalize(const hyper::math::Vec3& v, hyper::math::GeometryMode mode) {
+    return mode == hyper::math::GeometryMode::Spherical ? hyper::math::sphere::sphere_normalize(v)
+                                                        : hyper::math::hyperboloid_normalize(v);
+}
+
+hyper::math::Vec3 tile_vertex(const hyper::tiling::TilingPatch& patch,
+                              const hyper::tiling::Tile& tile,
+                              std::size_t vertex_index) {
+    return geo_normalize(
+        hyper::math::apply_isometry(tile.transform, patch.base_polygon_vertices[vertex_index]),
+        patch.mode);
+}
+
+bool points_coincide(const hyper::math::Vec3& a,
+                     const hyper::math::Vec3& b,
+                     hyper::math::GeometryMode mode) {
+    return geo_distance(a, b, mode) <= 1.0e-5;
+}
+
+bool tile_touches_vertex(const hyper::tiling::TilingPatch& patch,
+                         int tile_id,
+                         const hyper::math::Vec3& target_vertex) {
+    if (tile_id < 0 || tile_id >= static_cast<int>(patch.tiles.size())) {
+        return false;
+    }
+
+    const hyper::tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(tile_id)];
+    for (std::size_t i = 0; i < patch.base_polygon_vertices.size(); ++i) {
+        if (points_coincide(tile_vertex(patch, tile, i), target_vertex, patch.mode)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool extend_vertex_loop(const hyper::tiling::TilingPatch& patch,
+                        const hyper::math::Vec3& target_vertex,
+                        std::vector<int>& route) {
+    if (route.size() == static_cast<std::size_t>(patch.parameters.q)) {
+        return tiles_are_neighbors(patch, route.back(), route.front());
+    }
+
+    const hyper::tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(route.back())];
+    for (int next_tile : tile.neighbors) {
+        if (next_tile < 0 ||
+            route_contains_tile(route, next_tile) ||
+            !tile_touches_vertex(patch, next_tile, target_vertex)) {
+            continue;
+        }
+
+        route.push_back(next_tile);
+        if (extend_vertex_loop(patch, target_vertex, route)) {
+            return true;
+        }
+        route.pop_back();
+    }
+
+    return false;
+}
+
+std::vector<int> find_vertex_laser_loop(const hyper::tiling::TilingPatch& patch) {
+    const hyper::tiling::Tile& root = patch.tiles.front();
+    for (std::size_t vertex_index = 0; vertex_index < patch.base_polygon_vertices.size(); ++vertex_index) {
+        const hyper::math::Vec3 target_vertex = tile_vertex(patch, root, vertex_index);
+        std::vector<int> route{root.id};
+        if (extend_vertex_loop(patch, target_vertex, route)) {
+            return route;
+        }
+    }
+    return {};
+}
+
+void test_center_laser_loop_follows_p_q_turn_rule() {
+    struct Preset {
+        hyper::math::RegularTilingParameters parameters;
+        hyper::math::GeometryMode mode;
+        int depth;
+        const char* label;
+    };
+
+    const std::array<Preset, 9> presets{{
+        {hyper::math::RegularTilingParameters{4, 6}, hyper::math::GeometryMode::Hyperbolic, 5, "{4,6}"},
+        {hyper::math::RegularTilingParameters{4, 5}, hyper::math::GeometryMode::Hyperbolic, 5, "{4,5}"},
+        {hyper::math::RegularTilingParameters{3, 7}, hyper::math::GeometryMode::Hyperbolic, 5, "{3,7}"},
+        {hyper::math::RegularTilingParameters{5, 4}, hyper::math::GeometryMode::Hyperbolic, 5, "{5,4}"},
+        {hyper::math::RegularTilingParameters{7, 3}, hyper::math::GeometryMode::Hyperbolic, 5, "{7,3}"},
+        {hyper::math::RegularTilingParameters{4, 3}, hyper::math::GeometryMode::Spherical, 8, "{4,3} spherical"},
+        {hyper::math::RegularTilingParameters{3, 4}, hyper::math::GeometryMode::Spherical, 8, "{3,4} spherical"},
+        {hyper::math::RegularTilingParameters{5, 3}, hyper::math::GeometryMode::Spherical, 8, "{5,3} spherical"},
+        {hyper::math::RegularTilingParameters{3, 5}, hyper::math::GeometryMode::Spherical, 8, "{3,5} spherical"},
+    }};
+
+    for (const Preset& preset : presets) {
+        const hyper::tiling::TilingPatch patch =
+            hyper::tiling::generate_tiling_patch(preset.parameters, preset.depth, 1.0e-6, preset.mode);
+        const std::vector<int> route = find_vertex_laser_loop(patch);
+
+        require(route.size() == static_cast<std::size_t>(preset.parameters.q),
+                std::string{"center laser loop uses q turns for "} + preset.label);
+        for (std::size_t i = 0; i < route.size(); ++i) {
+            const int current = route[i];
+            const int next = route[(i + 1U) % route.size()];
+            require(tiles_are_neighbors(patch, current, next),
+                    std::string{"laser route uses neighbouring tiles for "} + preset.label);
+        }
+    }
+}
+
 void test_patch_rejects_invalid_inputs() {
     require_throws<std::invalid_argument>(
         [] { (void)hyper::tiling::generate_tiling_patch(hyper::math::RegularTilingParameters{4, 6}, -1); },
@@ -318,6 +446,7 @@ int main() {
         test_minimap_deduplicates_shared_boundary_edges();
         test_minimap_survives_repeated_forward_movement();
         test_corner_tile_count_matches_q();
+        test_center_laser_loop_follows_p_q_turn_rule();
         test_patch_rejects_invalid_inputs();
         test_find_current_tile_and_rebasing();
         test_spherical_cube_tiling_closes();

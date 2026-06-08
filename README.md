@@ -10,6 +10,7 @@ Current pieces:
 - tile-local crossing and rebasing for walking across generated tiles
 - a GLFW/OpenGL perspective renderer for embedded tilings
 - static and camera-local minimaps
+- small demo props: houses, center-start laser loops, and minimap laser paths
 - atmospheric background shading
 - shader and mesh wrappers
 - CTest tests
@@ -63,6 +64,8 @@ Runtime controls:
 - `G`: toggle floor grid
 - `F`: toggle wireframe
 - `M`: toggle minimaps
+- `H`: toggle house props
+- `L`: toggle center-start laser loops and minimap laser paths (`q` turns at `360 / p` degrees for `{p,q}`)
 - `C` / `V`: decrease/increase edge segments
 - `B` / `N`: decrease/increase radial bands
 - `Esc`: release or recapture the mouse
