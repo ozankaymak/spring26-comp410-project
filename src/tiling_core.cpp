@@ -97,8 +97,8 @@ math::Mat3 reflection_across_side(double inradius, double angle, math::GeometryM
     // tile centre. Its pole is the unit normal of the reflecting hyperplane.
     const math::Vec3 normal =
         is_spherical(mode)
-            ? math::Vec3{std::sin(inradius), std::cos(inradius) * std::cos(angle),
-                         std::cos(inradius) * std::sin(angle)}
+            ? math::Vec3{std::sin(inradius), -std::cos(inradius) * std::cos(angle),
+                         -std::cos(inradius) * std::sin(angle)}
             : math::Vec3{std::sinh(inradius), std::cosh(inradius) * std::cos(angle),
                          std::cosh(inradius) * std::sin(angle)};
 
