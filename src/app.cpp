@@ -403,12 +403,6 @@ class DebugOverlay {
         bool initialized = false;
     };
 
-    enum class MinimapInteraction {
-        None,
-        DragStatic,
-        DragDynamic,
-    };
-
 public:
     ~DebugOverlay() {
         shutdown();
@@ -487,8 +481,7 @@ void main() {
         }
     }
 
-    void draw(GLFWwindow* window,
-              int width,
+    void draw(int width,
               int height,
               const RenderSettings& settings,
               const CameraState& camera,
@@ -506,7 +499,7 @@ void main() {
             add_text(18.0F, 18.0F, "F1 DEBUG UI", 2.0F, glm::vec4{0.88F, 0.94F, 1.00F, 0.92F});
         }
         if (settings.show_minimap) {
-            add_minimap(window, static_cast<float>(width), static_cast<float>(height), settings, camera, patch);
+            add_minimap(static_cast<float>(width), static_cast<float>(height), settings, camera, patch);
         }
 
         if (vertices_.empty()) {
@@ -621,30 +614,25 @@ private:
     static constexpr float kMinimapStackGap = 12.0F;
     static constexpr float kMinimapMargin = 16.0F;
     static constexpr float kMinimapViewportScale = 0.26F;
-    static constexpr float kMinimapMinSize = 132.0F;
-    static constexpr float kMinimapMaxSize = 214.0F;
 
-    static bool contains_point(const glm::vec2& min, const glm::vec2& max, const glm::vec2& point) {
-        return point.x >= min.x && point.x <= max.x && point.y >= min.y && point.y <= max.y;
-    }
-
-    static void clamp_minimap_window_size(MinimapWindow& window, float height) {
-        const float max_stacked_size = std::max(96.0F, (height - kMinimapStackGap) * 0.5F - 38.0F);
-        const float max_size = std::min(kMinimapMaxSize, max_stacked_size);
-        window.size = glm::clamp(window.size, std::min(kMinimapMinSize, max_size), max_size);
+    static float minimap_view_size(float width, float height) {
+        const float desired_size = std::max(0.0F, std::min(width, height) * kMinimapViewportScale);
+        const float max_width_size = std::max(0.0F, width - 16.0F);
+        const float max_stacked_size = std::max(0.0F, (height - kMinimapStackGap) * 0.5F - 38.0F);
+        return std::min(desired_size, std::min(max_width_size, max_stacked_size));
     }
 
     void sync_minimap_stack(float width, float height) {
-        clamp_minimap_window_size(static_window_, height);
-        clamp_minimap_window_size(dynamic_window_, height);
+        const float side = minimap_view_size(width, height);
+        static_window_.size = side;
+        dynamic_window_.size = side;
 
         const float stack_width = std::max(minimap_window_width(static_window_), minimap_window_width(dynamic_window_));
         const float stack_height =
             minimap_window_height(static_window_) + kMinimapStackGap + minimap_window_height(dynamic_window_);
 
-        static_window_.position.x = glm::clamp(static_window_.position.x, 0.0F, std::max(0.0F, width - stack_width));
-        static_window_.position.y =
-            glm::clamp(static_window_.position.y, 0.0F, std::max(0.0F, height - stack_height));
+        static_window_.position.x = std::max(0.0F, width - kMinimapMargin - stack_width);
+        static_window_.position.y = std::min(kMinimapMargin, std::max(0.0F, height - stack_height));
 
         dynamic_window_.position.x = static_window_.position.x;
         dynamic_window_.position.y =
@@ -657,84 +645,9 @@ private:
             return;
         }
 
-        const float side = glm::clamp(std::min(width, height) * kMinimapViewportScale,
-                                      kMinimapMinSize,
-                                      kMinimapMaxSize);
-        static_window_.size = side;
-        dynamic_window_.size = side;
-
-        const float stack_width = std::max(minimap_window_width(static_window_), minimap_window_width(dynamic_window_));
-        static_window_.position = glm::vec2{std::max(0.0F, width - kMinimapMargin - stack_width), kMinimapMargin};
-
         static_window_.initialized = true;
         dynamic_window_.initialized = true;
         sync_minimap_stack(width, height);
-    }
-
-    MinimapInteraction begin_minimap_interaction(const MinimapWindow& window,
-                                                 MinimapInteraction drag_action,
-                                                 const glm::vec2& mouse) const {
-        const float w = minimap_window_width(window);
-        const glm::vec2 min = window.position;
-        const glm::vec2 title_max = window.position + glm::vec2{w, 24.0F};
-
-        if (contains_point(min, title_max, mouse)) {
-            return drag_action;
-        }
-        return MinimapInteraction::None;
-    }
-
-    void update_minimap_window_interaction(GLFWwindow* window, float width, float height) {
-        ensure_minimap_windows(width, height);
-        if (window == nullptr || g_cursor_captured) {
-            active_minimap_interaction_ = MinimapInteraction::None;
-            previous_minimap_mouse_down_ = false;
-            return;
-        }
-
-        int window_width = 0;
-        int window_height = 0;
-        glfwGetWindowSize(window, &window_width, &window_height);
-        double raw_x = 0.0;
-        double raw_y = 0.0;
-        glfwGetCursorPos(window, &raw_x, &raw_y);
-        const float scale_x = window_width > 0 ? width / static_cast<float>(window_width) : 1.0F;
-        const float scale_y = window_height > 0 ? height / static_cast<float>(window_height) : 1.0F;
-        const glm::vec2 mouse{static_cast<float>(raw_x) * scale_x, static_cast<float>(raw_y) * scale_y};
-        const bool mouse_down = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-
-        if (!mouse_down) {
-            active_minimap_interaction_ = MinimapInteraction::None;
-            previous_minimap_mouse_down_ = false;
-            return;
-        }
-
-        if (!previous_minimap_mouse_down_) {
-            active_minimap_interaction_ =
-                begin_minimap_interaction(dynamic_window_, MinimapInteraction::DragDynamic, mouse);
-            if (active_minimap_interaction_ == MinimapInteraction::None) {
-                active_minimap_interaction_ =
-                    begin_minimap_interaction(static_window_, MinimapInteraction::DragStatic, mouse);
-            }
-
-            drag_offset_ = mouse;
-            if (active_minimap_interaction_ == MinimapInteraction::DragStatic) {
-                drag_offset_ = mouse - static_window_.position;
-            } else if (active_minimap_interaction_ == MinimapInteraction::DragDynamic) {
-                drag_offset_ = mouse - dynamic_window_.position;
-            }
-        }
-
-        if (active_minimap_interaction_ == MinimapInteraction::DragStatic) {
-            static_window_.position = mouse - drag_offset_;
-        } else if (active_minimap_interaction_ == MinimapInteraction::DragDynamic) {
-            const glm::vec2 dynamic_position = mouse - drag_offset_;
-            static_window_.position =
-                dynamic_position - glm::vec2{0.0F, minimap_window_height(static_window_) + kMinimapStackGap};
-        }
-
-        sync_minimap_stack(width, height);
-        previous_minimap_mouse_down_ = true;
     }
 
     void add_text(float x, float y, const std::string& text, float scale, const glm::vec4& color) {
@@ -887,8 +800,7 @@ private:
         }
     }
 
-    void add_minimap(GLFWwindow* window,
-                     float width,
+    void add_minimap(float width,
                      float height,
                      const RenderSettings& settings,
                      const CameraState& camera,
@@ -898,7 +810,7 @@ private:
         }
 
         ensure_static_minimap_cache(settings, patch);
-        update_minimap_window_interaction(window, width, height);
+        ensure_minimap_windows(width, height);
 
         const math::CameraFrame global_frame = global_camera_frame(camera, patch);
         const math::Mat3 static_view = math::identity_isometry();
@@ -1035,9 +947,6 @@ private:
     std::vector<tiling::MinimapPolyline> dynamic_minimap_edges_;
     MinimapWindow static_window_;
     MinimapWindow dynamic_window_;
-    MinimapInteraction active_minimap_interaction_ = MinimapInteraction::None;
-    glm::vec2 drag_offset_{};
-    bool previous_minimap_mouse_down_ = false;
     std::vector<OverlayVertex> vertices_;
 };
 
@@ -1649,7 +1558,7 @@ void App::run() {
             draw_world();
         }
 
-        debug_overlay.draw(window, width, height, settings, camera, patch);
+        debug_overlay.draw(width, height, settings, camera, patch);
 
         glfwSwapBuffers(window);
     }
