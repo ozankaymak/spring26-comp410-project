@@ -7,7 +7,7 @@ in float vHypDist;
 uniform vec3 uAtmosphereColor;
 uniform vec3 uLightDir;
 uniform int uGeometryMode; // 0 = hyperbolic, 1 = spherical
-uniform float uDepthBias;  // pulls grid lines slightly toward the camera
+uniform float uDepthBias;  // pulls line overlays slightly toward the camera
 
 out vec4 FragColor;
 
@@ -36,6 +36,6 @@ void main() {
         // overlap disappears.
         gl_FragDepth = clamp(vHypDist / kPi - uDepthBias, 0.0, 1.0);
     } else {
-        gl_FragDepth = gl_FragCoord.z;
+        gl_FragDepth = clamp(gl_FragCoord.z - uDepthBias, 0.0, 1.0);
     }
 }
