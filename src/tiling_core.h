@@ -1,6 +1,8 @@
 #pragma once
 
+#include "math/geometry_mode.h"
 #include "math/hyperbolic.h"
+#include "math/spherical.h"
 
 #include <vector>
 
@@ -17,15 +19,19 @@ struct Tile {
 };
 
 struct TilingPatch {
+    math::GeometryMode mode = math::GeometryMode::Hyperbolic;
     math::RegularTilingParameters parameters{};
     math::RegularTilingMetrics metrics{};
     std::vector<math::Vec3> base_polygon_vertices;
     std::vector<Tile> tiles;
 };
 
-std::vector<math::Vec3> make_base_polygon_vertices(math::RegularTilingParameters parameters);
+std::vector<math::Vec3> make_base_polygon_vertices(
+    math::RegularTilingParameters parameters,
+    math::GeometryMode mode = math::GeometryMode::Hyperbolic);
 TilingPatch generate_tiling_patch(math::RegularTilingParameters parameters, int max_depth,
-                                  double duplicate_tolerance = 1.0e-6);
+                                  double duplicate_tolerance = 1.0e-6,
+                                  math::GeometryMode mode = math::GeometryMode::Hyperbolic);
 bool has_duplicate_centers(const TilingPatch& patch, double tolerance);
 
 // Find the tile that contains the given position in the tiling patch.
@@ -37,10 +43,12 @@ int locate_crossed_side(const TilingPatch& patch, const math::Vec3& tile_local_p
                         double tolerance = 1.0e-10);
 
 // Converts a tile-local camera frame into global patch coordinates.
-math::CameraFrame global_frame_from_tile(const math::CameraFrame& tile_local_frame, const Tile& tile);
+math::CameraFrame global_frame_from_tile(const math::CameraFrame& tile_local_frame, const Tile& tile,
+                                         math::GeometryMode mode = math::GeometryMode::Hyperbolic);
 
 // Rebase a global camera frame to be relative to the given tile.
-math::CameraFrame rebase_frame_to_tile(const math::CameraFrame& frame, const Tile& tile);
+math::CameraFrame rebase_frame_to_tile(const math::CameraFrame& frame, const Tile& tile,
+                                       math::GeometryMode mode = math::GeometryMode::Hyperbolic);
 
 // Rebase a tile-local camera frame across any crossed tile edges.
 bool rebase_frame_across_edges(const TilingPatch& patch, int& current_tile_id,

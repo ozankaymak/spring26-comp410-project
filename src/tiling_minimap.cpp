@@ -9,10 +9,29 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-// Apply the minimap view isometry then project to the Poincaré disk.
-glm::dvec2 project_to_minimap(const math::Vec3& world_pos, const math::Mat3& minimap_view) {
-    const math::Vec3 local = math::hyperboloid_normalize(math::apply_isometry(minimap_view, world_pos));
-    const math::Vec2 p = math::project_to_poincare_disk(local);
+bool is_spherical(math::GeometryMode mode) {
+    return mode == math::GeometryMode::Spherical;
+}
+
+math::Vec3 geo_normalize(const math::Vec3& v, math::GeometryMode mode) {
+    return is_spherical(mode) ? math::sphere::sphere_normalize(v) : math::hyperboloid_normalize(v);
+}
+
+double geo_distance(const math::Vec3& a, const math::Vec3& b, math::GeometryMode mode) {
+    return is_spherical(mode) ? math::sphere::intrinsic_distance(a, b) : math::intrinsic_distance(a, b);
+}
+
+math::Vec3 geo_geodesic_lerp(const math::Vec3& a, const math::Vec3& b, double t, math::GeometryMode mode) {
+    return is_spherical(mode) ? math::sphere::geodesic_lerp(a, b, t) : math::geodesic_lerp(a, b, t);
+}
+
+// Apply the minimap view isometry then project to the disk. Hyperbolic uses the
+// Poincaré disk; spherical uses the stereographic disk (its conformal analogue).
+glm::dvec2 project_to_minimap(const math::Vec3& world_pos, const math::Mat3& minimap_view,
+                              math::GeometryMode mode) {
+    const math::Vec3 local = geo_normalize(math::apply_isometry(minimap_view, world_pos), mode);
+    const math::Vec2 p = is_spherical(mode) ? math::sphere::project_to_stereographic_disk(local)
+                                            : math::project_to_poincare_disk(local);
     return {p.x, p.y};
 }
 
@@ -29,7 +48,7 @@ void collect_minimap_candidate_tiles(const TilingPatch& patch,
                                      std::vector<int>& out) {
     out.clear();
     for (int i = 0; i < static_cast<int>(patch.tiles.size()); ++i) {
-        if (math::intrinsic_distance(center, patch.tiles[static_cast<std::size_t>(i)].center) <= radius) {
+        if (geo_distance(center, patch.tiles[static_cast<std::size_t>(i)].center, patch.mode) <= radius) {
             out.push_back(i);
         }
     }
@@ -47,7 +66,7 @@ void collect_minimap_points_from_tiles(const TilingPatch& patch,
     for (int i = 0; i < count; ++i) {
         const glm::dvec2 p = project_to_minimap(
             patch.tiles[static_cast<std::size_t>(tile_indices[static_cast<std::size_t>(i)])].center,
-            minimap_view);
+            minimap_view, patch.mode);
         out.emplace_back(static_cast<float>(p.x), static_cast<float>(p.y));
     }
 }
@@ -89,10 +108,10 @@ void collect_minimap_edges_from_tiles(const TilingPatch& patch,
             }
 
             const std::size_t next_side = (side + 1U) % patch.base_polygon_vertices.size();
-            const math::Vec3 a =
-                math::hyperboloid_normalize(math::apply_isometry(tile.transform, patch.base_polygon_vertices[side]));
-            const math::Vec3 b = math::hyperboloid_normalize(
-                math::apply_isometry(tile.transform, patch.base_polygon_vertices[next_side]));
+            const math::Vec3 a = geo_normalize(
+                math::apply_isometry(tile.transform, patch.base_polygon_vertices[side]), patch.mode);
+            const math::Vec3 b = geo_normalize(
+                math::apply_isometry(tile.transform, patch.base_polygon_vertices[next_side]), patch.mode);
             edge_list.push_back(MinimapEdge{a, b});
             if (static_cast<int>(edge_list.size()) >= max_edges) {
                 limit_hit = true;
@@ -112,12 +131,29 @@ void collect_minimap_edges_from_tiles(const TilingPatch& patch,
         MinimapPolyline& polyline = out[ei];
         polyline.clear();
 
-        const glm::dvec2 pa = project_to_minimap(edge_list[ei].a, minimap_view);
-        const glm::dvec2 pb = project_to_minimap(edge_list[ei].b, minimap_view);
+        const glm::dvec2 pa = project_to_minimap(edge_list[ei].a, minimap_view, patch.mode);
+        const glm::dvec2 pb = project_to_minimap(edge_list[ei].b, minimap_view, patch.mode);
 
         auto push_point = [&](const glm::dvec2& p) {
             polyline.emplace_back(static_cast<float>(p.x), static_cast<float>(p.y));
         };
+
+        // Spherical geodesics do not meet the disk boundary at right angles, so
+        // the Poincaré arc fit below does not apply. Sample the great circle
+        // directly on the sphere and project each point instead.
+        if (is_spherical(patch.mode)) {
+            const double edge_angle = geo_distance(edge_list[ei].a, edge_list[ei].b, patch.mode);
+            const int samples =
+                std::max(2, static_cast<int>(std::ceil(edge_angle / max_angle_step)) + 1);
+            polyline.reserve(static_cast<std::size_t>(samples));
+            for (int i = 0; i < samples; ++i) {
+                const double t = static_cast<double>(i) / static_cast<double>(samples - 1);
+                const math::Vec3 sample =
+                    geo_geodesic_lerp(edge_list[ei].a, edge_list[ei].b, t, patch.mode);
+                push_point(project_to_minimap(sample, minimap_view, patch.mode));
+            }
+            continue;
+        }
 
         // In the Poincaré disk, hyperbolic geodesics are circular arcs perpendicular
         // to the boundary. Solve for the arc through pa and pb.

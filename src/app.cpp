@@ -1,6 +1,8 @@
 #include "app.h"
 
+#include "math/geometry_mode.h"
 #include "math/hyperbolic.h"
+#include "math/spherical.h"
 #include "mesh.h"
 #include "shader.h"
 #include "tiling_core.h"
@@ -54,6 +56,7 @@ struct GlfwContext {
 };
 
 struct RenderSettings {
+    math::GeometryMode geometry_mode = math::GeometryMode::Hyperbolic;
     math::RegularTilingParameters tiling_parameters{4, 6};
     int tiling_depth = kProgressDemoTilingDepth;
     bool show_grid = true;
@@ -71,12 +74,64 @@ struct RenderSettings {
     int radial_bands = 2;
 };
 
-math::CameraFrame display_aligned_frame() {
-    return math::orthonormalize_frame(math::CameraFrame{
-        math::origin(),
-        math::Vec3{0.0, 0.0, 1.0},
-        math::Vec3{0.0, 1.0, 0.0},
-    });
+// --- Geometry-mode dispatch -------------------------------------------------
+// Matrix/vector application and isometry composition are metric-agnostic and
+// reuse the hyperbolic implementations; only the operations below differ.
+bool geo_is_spherical(math::GeometryMode mode) {
+    return mode == math::GeometryMode::Spherical;
+}
+
+math::Vec3 geo_normalize(const math::Vec3& v, math::GeometryMode mode) {
+    return geo_is_spherical(mode) ? math::sphere::sphere_normalize(v) : math::hyperboloid_normalize(v);
+}
+
+double geo_distance(const math::Vec3& a, const math::Vec3& b, math::GeometryMode mode) {
+    return geo_is_spherical(mode) ? math::sphere::intrinsic_distance(a, b) : math::intrinsic_distance(a, b);
+}
+
+math::Vec3 geo_geodesic_lerp(const math::Vec3& a, const math::Vec3& b, double t, math::GeometryMode mode) {
+    return geo_is_spherical(mode) ? math::sphere::geodesic_lerp(a, b, t) : math::geodesic_lerp(a, b, t);
+}
+
+math::CameraFrame geo_orthonormalize(const math::CameraFrame& frame, math::GeometryMode mode) {
+    return geo_is_spherical(mode) ? math::sphere::orthonormalize_frame(frame)
+                                  : math::orthonormalize_frame(frame);
+}
+
+math::Mat3 geo_frame_to_isometry(const math::CameraFrame& frame, math::GeometryMode mode) {
+    return geo_is_spherical(mode) ? math::sphere::frame_to_isometry(frame)
+                                  : math::frame_to_isometry(frame);
+}
+
+math::Mat3 geo_inverse(const math::Mat3& m, math::GeometryMode mode) {
+    return geo_is_spherical(mode) ? math::sphere::inverse_isometry(m) : math::inverse_isometry(m);
+}
+
+math::Mat3 geo_local_translation(math::Vec2 delta, math::GeometryMode mode) {
+    return geo_is_spherical(mode) ? math::sphere::spherical_rotation(delta) : math::lorentz_boost(delta);
+}
+
+math::CameraFrame geo_move_frame(const math::CameraFrame& frame, math::Vec2 delta, math::GeometryMode mode) {
+    return geo_is_spherical(mode) ? math::sphere::move_frame(frame, delta) : math::move_frame(frame, delta);
+}
+
+math::Vec2 geo_project_conformal_disk(const math::Vec3& p, math::GeometryMode mode) {
+    return geo_is_spherical(mode) ? math::sphere::project_to_stereographic_disk(p)
+                                  : math::project_to_poincare_disk(p);
+}
+
+// Spherical patches close up, so they need enough BFS depth to wrap the sphere.
+int geo_tiling_depth(math::GeometryMode mode) {
+    return geo_is_spherical(mode) ? 8 : kProgressDemoTilingDepth;
+}
+
+math::CameraFrame display_aligned_frame(math::GeometryMode mode = math::GeometryMode::Hyperbolic) {
+    return geo_orthonormalize(math::CameraFrame{
+                                  math::origin(),
+                                  math::Vec3{0.0, 0.0, 1.0},
+                                  math::Vec3{0.0, 1.0, 0.0},
+                              },
+                              mode);
 }
 
 struct CameraState {
@@ -99,6 +154,10 @@ struct DebugInputState {
     bool preset2_down = false;
     bool preset3_down = false;
     bool preset4_down = false;
+    bool preset5_down = false;
+    bool preset6_down = false;
+    bool preset7_down = false;
+    bool preset8_down = false;
     bool g_down = false;
     bool f_down = false;
     bool z_down = false;
@@ -119,6 +178,7 @@ struct TilingPreset {
     int key = 0;
     math::RegularTilingParameters parameters{};
     const char* label = "";
+    math::GeometryMode mode = math::GeometryMode::Hyperbolic;
 };
 
 math::CameraFrame global_camera_frame(const CameraState& camera, const tiling::TilingPatch& patch);
@@ -180,23 +240,25 @@ bool clip_segment_to_unit_disk(const glm::vec2& a,
     return true;
 }
 
-glm::vec2 project_minimap_point(const math::Vec3& world_pos, const math::Mat3& minimap_view) {
-    const math::Vec3 local = math::hyperboloid_normalize(math::apply_isometry(minimap_view, world_pos));
-    const math::Vec2 projected = math::project_to_poincare_disk(local);
+glm::vec2 project_minimap_point(const math::Vec3& world_pos, const math::Mat3& minimap_view,
+                                math::GeometryMode mode) {
+    const math::Vec3 local = geo_normalize(math::apply_isometry(minimap_view, world_pos), mode);
+    const math::Vec2 projected = geo_project_conformal_disk(local, mode);
     return clamp_to_disk(glm::vec2{static_cast<float>(projected.x), static_cast<float>(projected.y)});
 }
 
-math::Vec3 frame_offset_point(const math::CameraFrame& frame, double forward_distance) {
+math::Vec3 frame_offset_point(const math::CameraFrame& frame, double forward_distance,
+                              math::GeometryMode mode) {
     const math::Vec3 local_offset =
-        math::apply_isometry(math::lorentz_boost(math::Vec2{forward_distance, 0.0}), math::origin());
-    return math::hyperboloid_normalize(math::apply_isometry(math::frame_to_isometry(frame), local_offset));
+        math::apply_isometry(geo_local_translation(math::Vec2{forward_distance, 0.0}, mode), math::origin());
+    return geo_normalize(math::apply_isometry(geo_frame_to_isometry(frame, mode), local_offset), mode);
 }
 
 double generated_map_radius(const tiling::TilingPatch& patch) {
     double radius = 0.0;
     const math::Vec3 origin = math::origin();
     for (const tiling::Tile& tile : patch.tiles) {
-        radius = std::max(radius, math::intrinsic_distance(origin, tile.center));
+        radius = std::max(radius, geo_distance(origin, tile.center, patch.mode));
     }
     return radius + 1.0e-6;
 }
@@ -214,11 +276,15 @@ glm::vec3 active_sky_color(const RenderSettings& settings) {
                     atmosphere_strength(settings.fog_density));
 }
 
-constexpr std::array<TilingPreset, 4> kTilingPresets{{
-    TilingPreset{GLFW_KEY_1, math::RegularTilingParameters{4, 6}, "1 {4,6} 6 SQUARES"},
-    TilingPreset{GLFW_KEY_2, math::RegularTilingParameters{3, 7}, "2 {3,7} 7 TRIANGLES"},
-    TilingPreset{GLFW_KEY_3, math::RegularTilingParameters{5, 4}, "3 {5,4} 4 PENTAGONS"},
-    TilingPreset{GLFW_KEY_4, math::RegularTilingParameters{7, 3}, "4 {7,3} 3 HEPTAGONS"},
+constexpr std::array<TilingPreset, 8> kTilingPresets{{
+    TilingPreset{GLFW_KEY_1, math::RegularTilingParameters{4, 6}, "1 {4,6} 6 SQUARES", math::GeometryMode::Hyperbolic},
+    TilingPreset{GLFW_KEY_2, math::RegularTilingParameters{3, 7}, "2 {3,7} 7 TRIANGLES", math::GeometryMode::Hyperbolic},
+    TilingPreset{GLFW_KEY_3, math::RegularTilingParameters{5, 4}, "3 {5,4} 4 PENTAGONS", math::GeometryMode::Hyperbolic},
+    TilingPreset{GLFW_KEY_4, math::RegularTilingParameters{7, 3}, "4 {7,3} 3 HEPTAGONS", math::GeometryMode::Hyperbolic},
+    TilingPreset{GLFW_KEY_5, math::RegularTilingParameters{4, 3}, "5 {4,3} SPHERE CUBE", math::GeometryMode::Spherical},
+    TilingPreset{GLFW_KEY_6, math::RegularTilingParameters{3, 4}, "6 {3,4} SPHERE OCTA", math::GeometryMode::Spherical},
+    TilingPreset{GLFW_KEY_7, math::RegularTilingParameters{5, 3}, "7 {5,3} SPHERE DODECA", math::GeometryMode::Spherical},
+    TilingPreset{GLFW_KEY_8, math::RegularTilingParameters{3, 5}, "8 {3,5} SPHERE ICOSA", math::GeometryMode::Spherical},
 }};
 
 void framebuffer_size_callback(GLFWwindow*, int width, int height) {
@@ -836,8 +902,9 @@ private:
 
         const math::CameraFrame global_frame = global_camera_frame(camera, patch);
         const math::Mat3 static_view = math::identity_isometry();
-        const math::Mat3 dynamic_view = math::inverse_isometry(math::frame_to_isometry(global_frame));
-        const math::Vec3 forward_point = frame_offset_point(global_frame, 0.35);
+        const math::Mat3 dynamic_view =
+            geo_inverse(geo_frame_to_isometry(global_frame, patch.mode), patch.mode);
+        const math::Vec3 forward_point = frame_offset_point(global_frame, 0.35, patch.mode);
 
         const double dynamic_query_radius =
             static_cast<double>(settings.minimap_radius) + patch.metrics.circumradius;
@@ -854,16 +921,16 @@ private:
         add_minimap_view(static_window_,
                          static_minimap_points_,
                          static_minimap_edges_,
-                         project_minimap_point(math::origin(), static_view),
-                         project_minimap_point(global_frame.position, static_view),
-                         project_minimap_point(forward_point, static_view),
+                         project_minimap_point(math::origin(), static_view, patch.mode),
+                         project_minimap_point(global_frame.position, static_view, patch.mode),
+                         project_minimap_point(forward_point, static_view, patch.mode),
                          "STATIC MINIMAP");
         add_minimap_view(dynamic_window_,
                          dynamic_minimap_points_,
                          dynamic_minimap_edges_,
-                         project_minimap_point(math::origin(), dynamic_view),
-                         project_minimap_point(global_frame.position, dynamic_view),
-                         project_minimap_point(forward_point, dynamic_view),
+                         project_minimap_point(math::origin(), dynamic_view, patch.mode),
+                         project_minimap_point(global_frame.position, dynamic_view, patch.mode),
+                         project_minimap_point(forward_point, dynamic_view, patch.mode),
                          "LOCAL MINIMAP");
     }
 
@@ -871,7 +938,7 @@ private:
                    const CameraState& camera,
                    const tiling::TilingPatch& patch) {
         const math::CameraFrame global_frame = global_camera_frame(camera, patch);
-        const double origin_distance = math::intrinsic_distance(math::origin(), global_frame.position);
+        const double origin_distance = geo_distance(math::origin(), global_frame.position, patch.mode);
         const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(camera.current_tile_id)];
 
         add_rect(10.0F, 10.0F, 392.0F, 360.0F, glm::vec4{0.02F, 0.03F, 0.04F, 0.78F});
@@ -890,7 +957,8 @@ private:
 
         {
             std::ostringstream text;
-            text << "TILING {" << patch.parameters.p << "," << patch.parameters.q << "}";
+            text << math::geometry_mode_name(patch.mode) << " {" << patch.parameters.p << ","
+                 << patch.parameters.q << "}";
             line(text.str(), value);
         }
         {
@@ -898,8 +966,8 @@ private:
             text << patch.parameters.p << " SIDES | " << patch.parameters.q << " AT CORNER";
             line(text.str(), label);
         }
-        line(kTilingPresets[0].label, label);
-        line(kTilingPresets[1].label, label);
+        line("1-4 HYPERBOLIC TILINGS", label);
+        line("5-8 SPHERICAL TILINGS", label);
         {
             std::ostringstream text;
             text << "[/] SPEED " << std::fixed << std::setprecision(2) << camera.move_speed;
@@ -990,28 +1058,35 @@ bool consume_key_press(GLFWwindow* window, int key, bool& was_down) {
     return pressed;
 }
 
-void rebuild_tiling(const RenderSettings& settings,
+void rebuild_tiling(RenderSettings& settings,
                     tiling::TilingPatch& patch,
                     Mesh& center_mesh,
                     Mesh& grid_mesh,
                     CameraState& camera) {
-    patch = tiling::generate_tiling_patch(settings.tiling_parameters, settings.tiling_depth);
+    settings.tiling_depth = geo_tiling_depth(settings.geometry_mode);
+    patch = tiling::generate_tiling_patch(settings.tiling_parameters, settings.tiling_depth, 1.0e-6,
+                                          settings.geometry_mode);
     center_mesh.upload(make_curved_tile_mesh(patch, settings.radial_bands, settings.edge_segments));
     grid_mesh.upload(make_grid_mesh(patch, settings.edge_segments));
-    camera.frame = display_aligned_frame();
+    camera.frame = display_aligned_frame(settings.geometry_mode);
     camera.pitch = -0.28F;
     camera.eye_height = 0.32F;
     camera.current_tile_id = 0;
 }
 
-bool apply_tiling_preset(RenderSettings& settings, math::RegularTilingParameters parameters) {
-    if (!math::is_hyperbolic_tiling(parameters.p, parameters.q)) {
+bool apply_tiling_preset(RenderSettings& settings, math::RegularTilingParameters parameters,
+                         math::GeometryMode mode) {
+    const bool valid = geo_is_spherical(mode) ? math::sphere::is_spherical_tiling(parameters.p, parameters.q)
+                                              : math::is_hyperbolic_tiling(parameters.p, parameters.q);
+    if (!valid) {
         return false;
     }
-    if (settings.tiling_parameters.p == parameters.p && settings.tiling_parameters.q == parameters.q) {
+    if (settings.geometry_mode == mode && settings.tiling_parameters.p == parameters.p &&
+        settings.tiling_parameters.q == parameters.q) {
         return false;
     }
 
+    settings.geometry_mode = mode;
     settings.tiling_parameters = parameters;
     return true;
 }
@@ -1030,16 +1105,28 @@ bool process_debug_input(GLFWwindow* window,
         settings.show_debug_ui = !settings.show_debug_ui;
     }
     if (consume_key_press(window, GLFW_KEY_1, input.preset1_down)) {
-        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[0].parameters);
+        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[0].parameters, kTilingPresets[0].mode);
     }
     if (consume_key_press(window, GLFW_KEY_2, input.preset2_down)) {
-        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[1].parameters);
+        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[1].parameters, kTilingPresets[1].mode);
     }
     if (consume_key_press(window, GLFW_KEY_3, input.preset3_down)) {
-        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[2].parameters);
+        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[2].parameters, kTilingPresets[2].mode);
     }
     if (consume_key_press(window, GLFW_KEY_4, input.preset4_down)) {
-        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[3].parameters);
+        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[3].parameters, kTilingPresets[3].mode);
+    }
+    if (consume_key_press(window, GLFW_KEY_5, input.preset5_down)) {
+        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[4].parameters, kTilingPresets[4].mode);
+    }
+    if (consume_key_press(window, GLFW_KEY_6, input.preset6_down)) {
+        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[5].parameters, kTilingPresets[5].mode);
+    }
+    if (consume_key_press(window, GLFW_KEY_7, input.preset7_down)) {
+        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[6].parameters, kTilingPresets[6].mode);
+    }
+    if (consume_key_press(window, GLFW_KEY_8, input.preset8_down)) {
+        rebuild_patch |= apply_tiling_preset(settings, kTilingPresets[7].parameters, kTilingPresets[7].mode);
     }
     if (consume_key_press(window, GLFW_KEY_G, input.g_down)) {
         settings.show_grid = !settings.show_grid;
@@ -1113,7 +1200,7 @@ void process_input(GLFWwindow* window, CameraState& camera, const tiling::Tiling
     }
 
     if (local_delta.x != 0.0 || local_delta.y != 0.0) {
-        math::CameraFrame moved_frame = math::move_frame(camera.frame, local_delta);
+        math::CameraFrame moved_frame = geo_move_frame(camera.frame, local_delta, patch.mode);
         int moved_tile_id = camera.current_tile_id;
 
         if (tiling::rebase_frame_across_edges(patch, moved_tile_id, moved_frame)) {
@@ -1167,7 +1254,7 @@ void process_input(GLFWwindow* window, CameraState& camera, const tiling::Tiling
                 f.y * -std::sin(yaw) + r.y * std::cos(yaw)
             };
             
-            camera.frame = math::orthonormalize_frame(camera.frame);
+            camera.frame = geo_orthonormalize(camera.frame, patch.mode);
         }
     }
 }
@@ -1199,16 +1286,17 @@ MeshData make_curved_tile_mesh(const tiling::TilingPatch& patch, int radial_band
             const math::Vec3 b = math::apply_isometry(tile.transform, patch.base_polygon_vertices[next_i]);
 
             for (int s = 0; s < edge_segments; ++s) {
-                boundary_ring.push_back(math::geodesic_lerp(a, b, static_cast<double>(s) / edge_segments));
+                boundary_ring.push_back(
+                    geo_geodesic_lerp(a, b, static_cast<double>(s) / edge_segments, patch.mode));
             }
         }
 
         const int rc = static_cast<int>(boundary_ring.size());
-        
+
         for (int band = 1; band <= radial_bands; ++band) {
             double t = static_cast<double>(band) / radial_bands;
             for (const math::Vec3& boundary_pos : boundary_ring) {
-                math::Vec3 hv = math::geodesic_lerp(tile.center, boundary_pos, t);
+                math::Vec3 hv = geo_geodesic_lerp(tile.center, boundary_pos, t, patch.mode);
                 append_vertex(mesh, h2_point_to_h3(hv), floor_normal, color);
             }
         }
@@ -1255,7 +1343,7 @@ MeshData make_grid_mesh(const tiling::TilingPatch& patch, int edge_segments) {
 
             unsigned int base = static_cast<unsigned int>(mesh.vertices.size());
             for (int s = 0; s <= edge_segments; ++s) {
-                math::Vec3 p = math::geodesic_lerp(a, b, static_cast<double>(s) / edge_segments);
+                math::Vec3 p = geo_geodesic_lerp(a, b, static_cast<double>(s) / edge_segments, patch.mode);
                 append_vertex(mesh, h2_point_to_h3(p), glm::vec3{0.0F, 1.0F, 0.0F}, grid_color);
                 if (s > 0) {
                     mesh.indices.push_back(base + s - 1);
@@ -1318,6 +1406,33 @@ glm::mat4 h3_lorentz_boost(const glm::vec3& direction, float distance) {
     return matrix;
 }
 
+// Spherical (SO(4)) counterpart of h3_lorentz_boost: rotates in the plane
+// spanned by the chosen direction and the w (time) axis.
+glm::mat4 h3_spherical_rotation(const glm::vec3& direction, float distance) {
+    const float length = glm::length(direction);
+    if (length <= 1.0e-6F || std::abs(distance) <= 1.0e-6F) {
+        return glm::mat4{1.0F};
+    }
+
+    const glm::vec3 n = direction / length;
+    const float c = std::cos(distance);
+    const float s = std::sin(distance);
+    glm::mat4 matrix{1.0F};
+
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            matrix[col][row] = (row == col ? 1.0F : 0.0F) + (c - 1.0F) * n[row] * n[col];
+        }
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        matrix[3][i] = s * n[i];
+        matrix[i][3] = -s * n[i];
+    }
+    matrix[3][3] = c;
+    return matrix;
+}
+
 glm::mat4 h3_rotation_yz(float angle) {
     const float c = std::cos(angle);
     const float s = std::sin(angle);
@@ -1350,7 +1465,7 @@ glm::mat4 h3_frame_from_h2_frame(const math::CameraFrame& frame) {
 
 math::CameraFrame global_camera_frame(const CameraState& camera, const tiling::TilingPatch& patch) {
     const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(camera.current_tile_id)];
-    return tiling::global_frame_from_tile(camera.frame, tile);
+    return tiling::global_frame_from_tile(camera.frame, tile, patch.mode);
 }
 
 glm::mat4 euclidean_projection(int width, int height, float zoom) {
@@ -1363,20 +1478,28 @@ glm::mat4 euclidean_projection(int width, int height, float zoom) {
 glm::mat4 lorentz_view(const CameraState& camera, const tiling::TilingPatch& patch) {
     const math::CameraFrame global_frame = global_camera_frame(camera, patch);
     const glm::mat4 floor_frame = h3_frame_from_h2_frame(global_frame);
-    const glm::mat4 eye_frame =
-        floor_frame * h3_lorentz_boost(glm::vec3{0.0F, 1.0F, 0.0F}, camera.eye_height) *
-        h3_rotation_yz(camera.pitch);
-    return h3_lorentz_inverse(eye_frame);
+
+    // Lifting the eye off the floor is a radial isometry along the embedded up
+    // axis: a Lorentz boost in hyperbolic space, an SO(4) rotation on the sphere.
+    const glm::mat4 eye_lift = geo_is_spherical(patch.mode)
+                                   ? h3_spherical_rotation(glm::vec3{0.0F, 1.0F, 0.0F}, camera.eye_height)
+                                   : h3_lorentz_boost(glm::vec3{0.0F, 1.0F, 0.0F}, camera.eye_height);
+    const glm::mat4 eye_frame = floor_frame * eye_lift * h3_rotation_yz(camera.pitch);
+
+    // The view is the inverse of the eye frame. Spherical eye frames live in
+    // SO(4), so their inverse is the plain transpose.
+    return geo_is_spherical(patch.mode) ? glm::transpose(eye_frame) : h3_lorentz_inverse(eye_frame);
 }
 
 void update_window_title(GLFWwindow* window, const CameraState& camera, const tiling::TilingPatch& patch) {
     const math::CameraFrame global_frame = global_camera_frame(camera, patch);
-    const double origin_distance = math::intrinsic_distance(math::origin(), global_frame.position);
+    const double origin_distance = geo_distance(math::origin(), global_frame.position, patch.mode);
     const tiling::Tile& tile = patch.tiles[static_cast<std::size_t>(camera.current_tile_id)];
 
     std::ostringstream title;
     title << std::fixed << std::setprecision(2)
-          << "Hyperbolica | {" << patch.parameters.p << "," << patch.parameters.q << "}"
+          << "Hyperbolica | " << math::geometry_mode_name(patch.mode) << " {" << patch.parameters.p << ","
+          << patch.parameters.q << "}"
           << " | tile " << camera.current_tile_id
           << " depth " << tile.depth
           << " | d(origin) " << origin_distance
@@ -1429,7 +1552,9 @@ void App::run() {
     DebugInputState debug_input;
     CameraState camera;
     
-    tiling::TilingPatch patch = tiling::generate_tiling_patch(settings.tiling_parameters, settings.tiling_depth);
+    settings.tiling_depth = geo_tiling_depth(settings.geometry_mode);
+    tiling::TilingPatch patch = tiling::generate_tiling_patch(settings.tiling_parameters, settings.tiling_depth,
+                                                              1.0e-6, settings.geometry_mode);
     Mesh center_mesh;
     center_mesh.upload(make_curved_tile_mesh(patch, settings.radial_bands, settings.edge_segments));
     Mesh grid_mesh;
@@ -1476,18 +1601,52 @@ void App::run() {
         glUniform3fv(glGetUniformLocation(shader.id(), "uAtmosphereColor"), 1, &settings.atmosphere_color[0]);
         const glm::vec3 light_dir = glm::normalize(glm::vec3{0.85F, 1.20F, 0.45F});
         glUniform3fv(glGetUniformLocation(shader.id(), "uLightDir"), 1, &light_dir[0]);
+        glUniform1i(glGetUniformLocation(shader.id(), "uGeometryMode"),
+                    static_cast<int>(patch.mode));
 
-        glPolygonMode(GL_FRONT_AND_BACK, settings.show_wireframe ? GL_LINE : GL_FILL);
-        
-        glEnable(GL_POLYGON_OFFSET_FILL);
-        glPolygonOffset(1.0f, 1.0f);
-        center_mesh.draw();
-        glDisable(GL_POLYGON_OFFSET_FILL);
-        
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        // Draws the tile interiors and the grid overlay with the current
+        // spherical-pass uniform already bound.
+        const GLint depth_bias_loc = glGetUniformLocation(shader.id(), "uDepthBias");
+        auto draw_world = [&]() {
+            glPolygonMode(GL_FRONT_AND_BACK, settings.show_wireframe ? GL_LINE : GL_FILL);
+            glEnable(GL_POLYGON_OFFSET_FILL);
+            glPolygonOffset(1.0f, 1.0f);
+            glUniform1f(depth_bias_loc, 0.0f);
+            center_mesh.draw();
+            glDisable(GL_POLYGON_OFFSET_FILL);
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            if (settings.show_grid) {
+                // In spherical mode the fragment shader writes depth from the
+                // geodesic distance, so the polygon offset above no longer
+                // separates fill from lines; a small depth bias pulls the grid
+                // just in front of the tile fill instead.
+                glUniform1f(depth_bias_loc, 0.0015f);
+                grid_mesh.draw_lines();
+                glUniform1f(depth_bias_loc, 0.0f);
+            }
+        };
 
-        if (settings.show_grid) {
-            grid_mesh.draw_lines();
+        if (geo_is_spherical(patch.mode)) {
+            // Stereographic projection blows up at the antipode, so the sphere
+            // is drawn in two clipped passes: the near hemisphere projected from
+            // one pole and the far hemisphere from the other. gl_ClipDistance
+            // discards the wrong hemisphere in each pass. Occlusion is handled
+            // entirely in the fragment shader, which writes gl_FragDepth from the
+            // true geodesic distance to the camera (acos(w)); that ordering is
+            // correct front-to-back by construction, so no depth-range tricks are
+            // needed and the two hemispheres compose seamlessly.
+            glEnable(GL_CLIP_DISTANCE0);
+
+            glUniform1i(glGetUniformLocation(shader.id(), "uSphericalPass"), 1);
+            draw_world();
+
+            glUniform1i(glGetUniformLocation(shader.id(), "uSphericalPass"), 2);
+            draw_world();
+
+            glDisable(GL_CLIP_DISTANCE0);
+        } else {
+            glUniform1i(glGetUniformLocation(shader.id(), "uSphericalPass"), 0);
+            draw_world();
         }
 
         debug_overlay.draw(window, width, height, settings, camera, patch);

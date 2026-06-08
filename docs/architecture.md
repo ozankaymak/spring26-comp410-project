@@ -9,9 +9,13 @@ main.cpp
        -> shader.cpp
        -> mesh.cpp
        -> src/math/hyperbolic.cpp
+       -> src/math/spherical.cpp
 
 tests/math_tests.cpp
   -> src/math/hyperbolic.cpp
+
+tests/spherical_tests.cpp
+  -> src/math/spherical.cpp
 
 tests/tiling_tests.cpp
   -> tiling_core.cpp
@@ -20,6 +24,12 @@ tests/render_tests.cpp
   -> shader.cpp
   -> mesh.cpp
 ```
+
+`src/math/spherical.cpp` (namespace `hyper::math::sphere`) is the spherical
+analogue of the hyperbolic math layer. It reuses the shared data types but works
+on the unit 2-sphere. `src/math/geometry_mode.h` defines the `GeometryMode`
+flag the tiling and app layers use to dispatch between the two paths; the
+hyperbolic API itself is unchanged.
 
 `main.cpp` is just startup and error reporting.
 

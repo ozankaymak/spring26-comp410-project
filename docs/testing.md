@@ -11,8 +11,12 @@ Current targets:
 - `hyperbolica_smoke`: tiny sanity check.
 - `hyperbolica_math_tests`: hyperboloid invariants, distance, normalization,
   projections, and `{4,6}` constants.
+- `hyperbolica_spherical_tests`: 2-sphere invariants, the spherical law of
+  cosines, rotations, stereographic/gnomonic projections, frame movement, and
+  `{4,3}` cube constants.
 - `hyperbolica_tiling_tests`: base polygon vertices, generated tile centers,
-  duplicate checks, crossing detection, rebasing, and invalid tiling input.
+  duplicate checks, crossing detection, rebasing, invalid tiling input, and
+  spherical `{4,3}`/`{3,4}` patch closure.
 - `hyperbolica_render_tests`: shader file loading and triangle mesh data.
 
 Shared assertion helpers are in `tests/test_support.h`. The helpers are small

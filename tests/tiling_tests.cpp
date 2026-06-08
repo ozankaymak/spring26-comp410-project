@@ -2,9 +2,13 @@
 #include "tiling_core.h"
 #include "tiling_minimap.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -249,6 +253,60 @@ void test_find_current_tile_and_rebasing() {
     require(boundary_tile == 0, "failed boundary rebase preserves current tile");
 }
 
+void test_spherical_cube_tiling_closes() {
+    // The {4,3} tiling closes into the six faces of a cube on the sphere.
+    const hyper::tiling::TilingPatch cube = hyper::tiling::generate_tiling_patch(
+        hyper::math::RegularTilingParameters{4, 3}, 6, 1.0e-6, hyper::math::GeometryMode::Spherical);
+
+    require(cube.mode == hyper::math::GeometryMode::Spherical, "patch records the spherical mode");
+    require(cube.tiles.size() == 6, "{4,3} spherical tiling closes to six tiles");
+    require(!hyper::tiling::has_duplicate_centers(cube, 1.0e-6), "cube tiles have distinct centers");
+
+    for (const hyper::tiling::Tile& tile : cube.tiles) {
+        require(hyper::math::sphere::is_on_sphere(tile.center), "spherical tile center lies on the sphere");
+        require(tile.neighbors.size() == 4, "square tiling stores four side slots");
+    }
+
+    // Opposite faces of the cube are one tiling diameter apart (pi/2 + pi/2).
+    double max_distance = 0.0;
+    for (const hyper::tiling::Tile& tile : cube.tiles) {
+        max_distance = std::max(max_distance,
+                                hyper::math::sphere::intrinsic_distance(cube.tiles[0].center, tile.center));
+    }
+    require_close(max_distance, std::acos(-1.0), "antipodal cube faces are pi apart", 1.0e-6);
+
+    // Every spherical {p,q} closes into the matching Platonic solid, with each
+    // tile fully linked to a distinct neighbour on every side. This guards the
+    // reflection-group generation against the antipode-dropping regression where
+    // a duplicated side-slot left the closing face ungenerated.
+    const std::array<std::pair<hyper::math::RegularTilingParameters, std::size_t>, 5> platonic{{
+        {hyper::math::RegularTilingParameters{3, 3}, 4},
+        {hyper::math::RegularTilingParameters{4, 3}, 6},
+        {hyper::math::RegularTilingParameters{3, 4}, 8},
+        {hyper::math::RegularTilingParameters{5, 3}, 12},
+        {hyper::math::RegularTilingParameters{3, 5}, 20},
+    }};
+
+    for (const auto& [params, expected] : platonic) {
+        const hyper::tiling::TilingPatch solid = hyper::tiling::generate_tiling_patch(
+            params, 10, 1.0e-6, hyper::math::GeometryMode::Spherical);
+        require(solid.tiles.size() == expected, "spherical {p,q} closes to the expected face count");
+        require(!hyper::tiling::has_duplicate_centers(solid, 1.0e-6), "solid tiles have distinct centers");
+
+        for (const hyper::tiling::Tile& tile : solid.tiles) {
+            require(tile.neighbors.size() == static_cast<std::size_t>(params.p),
+                    "tile stores one neighbour slot per side");
+            for (std::size_t s = 0; s < tile.neighbors.size(); ++s) {
+                require(tile.neighbors[s] >= 0, "every side links to a generated neighbour");
+                for (std::size_t r = s + 1; r < tile.neighbors.size(); ++r) {
+                    require(tile.neighbors[s] != tile.neighbors[r],
+                            "distinct sides link to distinct neighbours");
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -262,5 +320,6 @@ int main() {
         test_corner_tile_count_matches_q();
         test_patch_rejects_invalid_inputs();
         test_find_current_tile_and_rebasing();
+        test_spherical_cube_tiling_closes();
     });
 }

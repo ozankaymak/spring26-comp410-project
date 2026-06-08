@@ -35,6 +35,7 @@ target_compile_definitions(glad PUBLIC GL_SILENCE_DEPRECATION)
 
 add_library(hyperbolica_math
     src/math/hyperbolic.cpp
+    src/math/spherical.cpp
 )
 target_include_directories(hyperbolica_math PUBLIC src)
 target_link_libraries(hyperbolica_math PUBLIC project_warnings)
@@ -84,6 +85,12 @@ if(BUILD_TESTING)
     )
     target_link_libraries(hyperbolica_math_tests PRIVATE hyperbolica_math project_warnings)
     add_test(NAME hyperbolica_math_tests COMMAND hyperbolica_math_tests)
+
+    add_executable(hyperbolica_spherical_tests
+        tests/spherical_tests.cpp
+    )
+    target_link_libraries(hyperbolica_spherical_tests PRIVATE hyperbolica_math project_warnings)
+    add_test(NAME hyperbolica_spherical_tests COMMAND hyperbolica_spherical_tests)
 
     add_executable(hyperbolica_tiling_tests
         tests/tiling_tests.cpp

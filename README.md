@@ -5,9 +5,10 @@ Interactive 3D curved-space rendering experiment in C++17.
 Current pieces:
 
 - hyperboloid-model math utilities
-- regular `{p,q}` tiling metric helpers
+- an experimental spherical (2-sphere) mode that mirrors the hyperbolic pipeline
+- regular `{p,q}` tiling metric helpers for both curvatures
 - tile-local crossing and rebasing for walking across generated tiles
-- a GLFW/OpenGL perspective renderer for H3-embedded tilings
+- a GLFW/OpenGL perspective renderer for embedded tilings
 - shader and mesh wrappers
 - CTest tests
 
@@ -45,10 +46,14 @@ Progress-demo controls:
 - `WASD` or arrow keys: move across the `{4,6}` patch
 - Mouse: look around in first person (when captured)
 - `Space` / `Shift`: raise/lower the camera height
-- `1`: render `{4,6}` with six squares meeting at each corner
-- `2`: render `{3,7}` with seven triangles meeting at each corner
-- `3`: render `{5,4}`
-- `4`: render `{7,3}`
+- `1`: render hyperbolic `{4,6}` with six squares meeting at each corner
+- `2`: render hyperbolic `{3,7}` with seven triangles meeting at each corner
+- `3`: render hyperbolic `{5,4}`
+- `4`: render hyperbolic `{7,3}`
+- `5`: render spherical `{4,3}` (the cube)
+- `6`: render spherical `{3,4}` (the octahedron)
+- `7`: render spherical `{5,3}` (the dodecahedron)
+- `8`: render spherical `{3,5}` (the icosahedron)
 - `[` / `-`: decrease movement speed
 - `]` / `=`: increase movement speed
 - `Q` / `E`: zoom out/in by changing perspective field of view
@@ -77,5 +82,6 @@ runtime settings and avoids an external ImGui dependency.
 - [Architecture](docs/architecture.md)
 - [Testing](docs/testing.md)
 - [Hyperbolic Geometry](docs/hyperbolic_geometry.md)
+- [Spherical Geometry](docs/spherical_geometry.md)
 - [Progress Demo Smoke Checklist](docs/progress_demo_smoke_checklist.md)
 - [Progress Report Draft](docs/progress_report_draft.md)
